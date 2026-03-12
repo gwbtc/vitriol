@@ -1,28 +1,61 @@
 ::  /app/gwgh/hoon
-::  Groundwire for GitHub — signing & verification agent
+::  Groundwire for GitHub — commit signing & on-chain identity verification
 ::
 ::  Two modes:
 ::    Signer (committer's ship):  POST /gwgh/sign
-::    Verifier (CI's ship):       GET  /gwgh/check-id/~ship-name
+::    Verifier (CI's ship):       POST /gwgh/verify-commit
 ::
-::  The signer produces a structured signature containing the ship's @p.
-::  The verifier checks whether a given @p has an on-chain Groundwire
-::  attestation by scrying Jael (populated by ord-watcher).
+::  The signer signs commit content with the ship's Ed25519 networking
+::  key — the same key attested on-chain via a Groundwire inscription.
+::  The verifier checks the signature against the signer's on-chain
+::  pass by scrying Jael (populated by ord-watcher).
 ::
-/-  gwgh
-/+  default-agent, server, ecdsa
+/+  default-agent, server
 |%
 +$  card  card:agent:gall
-+$  versioned-state  state-0
++$  versioned-state
+  $%  state-0
+      state-1
+  ==
 +$  state-0
   $:  %0
       privkey=(unit @)
       pubkey=(unit @t)
-      keys=(map @t gw-id:gwgh)
+      keys=(map @t [pubkey=@t name=@t added=@da])
   ==
++$  state-1
+  $:  %1
+      ~
+  ==
+::
+++  to-hex
+  |=  [width=@ val=@]
+  ^-  @t
+  =/  raw  (trip (scot %ux val))
+  =/  clean  (skim (slag 2 raw) |=(c=@ !=(c '.')))
+  =/  cur  (lent clean)
+  ?:  (gte cur width)
+    (crip (slag (sub cur width) clean))
+  (crip (weld (reap (sub width cur) '0') clean))
+::
+++  from-hex
+  |=  hex=@t
+  ^-  @
+  =/  chars  (flop (trip hex))
+  =/  val=@  0
+  =/  i=@  0
+  |-
+  ?~  chars  val
+  =/  c  i.chars
+  =/  nib=@
+    ?:  &((gte c '0') (lte c '9'))  (sub c '0')
+    ?:  &((gte c 'a') (lte c 'f'))  (add 10 (sub c 'a'))
+    ?:  &((gte c 'A') (lte c 'F'))  (add 10 (sub c 'A'))
+    !!
+  $(chars t.chars, i +(i), val (add val (lsh [2 i] nib)))
 --
 ^-  agent:gall
-=|  state-0
+=|  state-1
 =*  state  -
 |_  =bowl:gall
 +*  this  .
@@ -39,8 +72,11 @@
 ++  on-load
   |=  =vase
   ^-  (quip card _this)
-  :-  ~
-  this(state !<(versioned-state vase))
+  =/  old  !<(versioned-state vase)
+  ?-  -.old
+    %1  `this(state old)
+    %0  `this(state *state-1)
+  ==
 ::
 ++  on-poke
   |=  [=mark =vase]
@@ -58,46 +94,133 @@
       :_  this
       (give-simple-payload:app:server eyre-id not-found:gen:server)
       ::
-      ::  GET /gwgh/pubkey — return this ship's signing pubkey
+      ::  GET /gwgh/pubkey — return this ship's on-chain networking key
       ::
         [%gwgh %pubkey ~]
+      =/  deed-result
+        %-  mule  |.
+        .^  [life=@ud pass=@ sec=(unit @)]
+            %j
+            /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p our.bowl)/1
+        ==
       =/  result=json
-        ?~  pubkey
-          (pairs:enjs:format ['configured' b+%.n]~)
+        ?:  ?=(%| -.deed-result)
+          (pairs:enjs:format ~[['configured' b+%.n] ['error' s+'no keys in Jael']])
         %-  pairs:enjs:format
         :~  ['configured' b+%.y]
-            ['pubkey' s+u.pubkey]
+            ['pass' s+(to-hex 130 pass.p.deed-result)]
+            ['life' (numb:enjs:format life.p.deed-result)]
             ['ship' s+(scot %p our.bowl)]
         ==
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
-      ::  POST /gwgh/sign — sign commit content with this ship's key
+      ::  POST /gwgh/sign — sign commit content with networking key
       ::
         [%gwgh %sign ~]
       ?.  =(meth %'POST')
         =/  err=json  (pairs:enjs:format ['error' s+'POST required']~)
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
-      ?~  privkey
-        =/  err=json  (pairs:enjs:format ['error' s+'no signing key configured']~)
+      ::  get our deed and ring from Jael
+      =/  deed-result
+        %-  mule  |.
+        .^  [life=@ud pass=@ sec=(unit @)]
+            %j
+            /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p our.bowl)/1
+        ==
+      ?:  ?=(%| -.deed-result)
+        =/  err=json  (pairs:enjs:format ['error' s+'no keys in Jael']~)
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server err))
+      =/  ring-result
+        %-  mule  |.
+        .^  @
+            %j
+            /(scot %p our.bowl)/vein/(scot %da now.bowl)/(scot %ud life.p.deed-result)
+        ==
+      ?:  ?=(%| -.ring-result)
+        =/  err=json  (pairs:enjs:format ['error' s+'cannot read private key from Jael']~)
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server err))
+      ::  extract Ed25519 signing seed from ring
+      ::  ring format (suite B): 1 byte 'B' + 32 bytes sgn-seed + 32 bytes cry-seed
+      =/  sgn-seed  (end 8 (rsh 3 p.ring-result))
+      =/  jon  (need (de:json:html q:(need body.request.req)))
+      =/  content  (so:dejs:format (~(got by ((om:dejs:format same) jon)) 'content'))
+      =/  msg=octs  [(met 3 content) content]
+      =/  sig=@  (sign-octs:ed:crypto msg sgn-seed)
+      =/  result=json
+        %-  pairs:enjs:format
+        :~  ['signature' s+(to-hex 128 sig)]
+            ['signer_id' s+(scot %p our.bowl)]
+            ['pass' s+(to-hex 130 pass.p.deed-result)]
+        ==
+      :_  this
+      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::
+      ::  POST /gwgh/verify-commit — verify signature against on-chain key
+      ::  Body: {"signer":"~ship", "signature":"hex...", "payload":"..."}
+      ::
+        [%gwgh %verify-commit ~]
+      ?.  =(meth %'POST')
+        =/  err=json  (pairs:enjs:format ['error' s+'POST required']~)
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
       =/  jon  (need (de:json:html q:(need body.request.req)))
-      =/  content  (so:dejs:format (~(got by ((om:dejs:format same) jon)) 'content'))
-      =/  msg-hash  (hash-cord:ecdsa content)
-      =/  [v=@ r=@ s=@]  (sign:ecdsa msg-hash u.privkey)
+      =/  fields  ((om:dejs:format same) jon)
+      =/  signer-cord  (so:dejs:format (~(got by fields) 'signer'))
+      =/  sig-hex      (so:dejs:format (~(got by fields) 'signature'))
+      =/  payload       (so:dejs:format (~(got by fields) 'payload'))
+      ::  resolve signer
+      =/  who  (slav %p signer-cord)
+      ::  scry Jael for signer's on-chain deed
+      =/  deed-result
+        %-  mule  |.
+        .^  [life=@ud pass=@ sec=(unit @)]
+            %j
+            /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p who)/1
+        ==
+      ?:  ?=(%| -.deed-result)
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.n]
+              ['signer' s+signer-cord]
+              ['error' s+'signer not found in Jael']
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ?:  =(0 life.p.deed-result)
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.n]
+              ['signer' s+signer-cord]
+              ['error' s+'signer has no keys (life=0)']
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::  extract Ed25519 signing pubkey from on-chain pass
+      ::  pass format (suite b): 1 byte 'b' + 32 bytes sgn-pub + 32 bytes cry-pub
+      =/  sgn-pub  (end 8 (rsh 3 pass.p.deed-result))
+      =/  sig=@  (from-hex sig-hex)
+      =/  msg=octs  [(met 3 payload) payload]
+      =/  valid=?  (veri-octs:ed:crypto sig msg sgn-pub)
       =/  result=json
+        ?:  valid
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.y]
+              ['signer' s+signer-cord]
+              ['life' (numb:enjs:format life.p.deed-result)]
+          ==
         %-  pairs:enjs:format
-        :~  ['signature' s+(sig-to-hex:ecdsa v r s)]
-            ['signer_id' s+(scot %p our.bowl)]
-            ['pubkey' s+(need pubkey)]
+        :~  ['verified' b+%.n]
+            ['signer' s+signer-cord]
+            ['error' s+'signature does not match on-chain key']
         ==
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
       ::  GET /gwgh/check-id/~ship — check if @p has on-chain Groundwire ID
-      ::  Scries Jael for the ship's keys (populated by ord-watcher).
       ::
         [%gwgh %check-id *]
       ?~  t.t.site.rl
@@ -131,79 +254,6 @@
         ==
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
-      ::
-      ::  GET /gwgh/verify/<pubkey> — check pubkey against local key list
-      ::
-        [%gwgh %verify *]
-      ?~  t.t.site.rl
-        :_  this
-        (give-simple-payload:app:server eyre-id not-found:gen:server)
-      =/  queried-key=@t  i.t.t.site.rl
-      =/  found  (~(get by keys) queried-key)
-      =/  result=json
-        ?~  found
-          (pairs:enjs:format ~[['verified' b+%.n] ['pubkey' s+queried-key]])
-        %-  pairs:enjs:format
-        :~  ['verified' b+%.y]
-            ['pubkey' s+queried-key]
-            ['name' s+name.u.found]
-            ['added' s+(scot %da added.u.found)]
-        ==
-      :_  this
-      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
-      ::
-      ::  GET/POST /gwgh/keys — list or add recognized pubkeys
-      ::
-        [%gwgh %keys ~]
-      ?:  =(meth %'POST')
-        =/  jon  (need (de:json:html q:(need body.request.req)))
-        =/  fields  ((om:dejs:format same) jon)
-        =/  pk  (so:dejs:format (~(got by fields) 'pubkey'))
-        =/  nm  (so:dejs:format (~(got by fields) 'name'))
-        =/  new-id=gw-id:gwgh  [pubkey=pk name=nm added=now.bowl]
-        =/  result=json  (pairs:enjs:format ~[['ok' b+%.y] ['pubkey' s+pk] ['name' s+nm]])
-        :_  this(keys (~(put by keys) pk new-id))
-        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
-      =/  result=json
-        :-  %a
-        %+  turn  ~(tap by keys)
-        |=  [pk=@t =gw-id:gwgh]
-        %-  pairs:enjs:format
-        :~  ['pubkey' s+pk]
-            ['name' s+name.gw-id]
-            ['added' s+(scot %da added.gw-id)]
-        ==
-      :_  this
-      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
-    ==
-    ::
-      %gwgh-action
-    =/  act  !<(action:gwgh vase)
-    ?-  -.act
-        %generate-key
-      =/  priv  (shax eny.bowl)
-      =/  pub  (pubkey:ecdsa priv)
-      =/  pub-hex  (point-to-hex:ecdsa pub)
-      `this(privkey `priv, pubkey `pub-hex)
-      ::
-        %set-key
-      =/  priv  (slav %ux privkey.act)
-      =/  pub  (pubkey:ecdsa priv)
-      =/  pub-hex  (point-to-hex:ecdsa pub)
-      `this(privkey `priv, pubkey `pub-hex)
-      ::
-        %sign
-      ?~  privkey  !!
-      =/  msg-hash  (hash-cord:ecdsa content.act)
-      =/  [v=@ r=@ s=@]  (sign:ecdsa msg-hash u.privkey)
-      `this
-      ::
-        %add-key
-      =/  new-id=gw-id:gwgh  [pubkey=pubkey.act name=name.act added=now.bowl]
-      `this(keys (~(put by keys) pubkey.act new-id))
-      ::
-        %remove-key
-      `this(keys (~(del by keys) pubkey.act))
     ==
   ==
 ::
@@ -218,33 +268,21 @@
   |=  =(pole knot)
   ^-  (unit (unit cage))
   ?+  pole  ~
-      [%x %keys %json ~]
-    :-  ~  :-  ~  :-  %json
-    !>  ^-  json
-    :-  %a
-    %+  turn  ~(tap by keys)
-    |=  [pk=@t =gw-id:gwgh]
-    (pairs:enjs:format ~[['pubkey' s+pk] ['name' s+name.gw-id]])
-    ::
-      [%x %verify * %json ~]
-    =/  qk=@t  (snag 2 `(list @t)`pole)
-    :-  ~  :-  ~  :-  %json
-    !>  ^-  json
-    =/  found  (~(get by keys) qk)
-    ?~  found
-      (pairs:enjs:format ['verified' b+%.n]~)
-    %-  pairs:enjs:format
-    :~  ['verified' b+%.y]
-        ['name' s+name.u.found]
-    ==
-    ::
       [%x %pubkey %json ~]
+    =/  deed-result
+      %-  mule  |.
+      .^  [life=@ud pass=@ sec=(unit @)]
+          %j
+          /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p our.bowl)/1
+      ==
     :-  ~  :-  ~  :-  %json
     !>  ^-  json
-    ?~  pubkey  (pairs:enjs:format ['configured' b+%.n]~)
+    ?:  ?=(%| -.deed-result)
+      (pairs:enjs:format ['configured' b+%.n]~)
     %-  pairs:enjs:format
     :~  ['configured' b+%.y]
-        ['pubkey' s+u.pubkey]
+        ['pass' s+(to-hex 130 pass.p.deed-result)]
+        ['life' (numb:enjs:format life.p.deed-result)]
     ==
   ==
 ::

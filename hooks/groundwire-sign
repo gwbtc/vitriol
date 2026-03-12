@@ -87,7 +87,7 @@ RESPONSE=$(curl -s -f \
 
 SIGNATURE=$(echo "$RESPONSE" | jq -r '.signature // empty')
 SIGNER_ID=$(echo "$RESPONSE" | jq -r '.signer_id // empty')
-PUBKEY=$(echo "$RESPONSE" | jq -r '.pubkey // empty')
+PASS=$(echo "$RESPONSE" | jq -r '.pass // empty')
 
 if [ -z "$SIGNATURE" ]; then
   echo "groundwire-sign: no signature in response" >&2
@@ -106,7 +106,7 @@ fi
 cat <<GWSIG
 -----BEGIN GROUNDWIRE SIGNATURE-----
 signer:${SIGNER_ID}
-pubkey:${PUBKEY}
+pass:${PASS}
 sig:${SIGNATURE}
 -----END GROUNDWIRE SIGNATURE-----
 GWSIG

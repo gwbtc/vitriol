@@ -53,7 +53,6 @@ jobs:
             fi
 
             # --- Extract the signature block ---
-            # gpgsig header spans multiple lines; continuation lines start with a space
             SIG_BLOCK=$(echo "$RAW" | sed -n '/^gpgsig /{s/^gpgsig //; p; :a; n; /^ /{ s/^ //; p; ba; }; q}')
 
             # --- Check for Groundwire signature format ---
@@ -66,7 +65,6 @@ jobs:
 
             # --- Parse structured signature ---
             SIGNER=$(echo "$SIG_BLOCK" | grep '^signer:' | cut -d: -f2)
-            PUBKEY=$(echo "$SIG_BLOCK" | grep '^pubkey:' | cut -d: -f2)
             SIGNATURE=$(echo "$SIG_BLOCK" | grep '^sig:' | cut -d: -f2)
 
             if [ -z "$SIGNER" ] || [ -z "$SIGNATURE" ]; then
@@ -76,15 +74,26 @@ jobs:
               continue
             fi
 
-            echo "Commit ${SHORT}: signed by ${SIGNER} (pubkey ${PUBKEY:0:16}...)"
+            # --- Build the signed payload ---
+            # Git signs the commit object with the gpgsig header stripped.
+            PAYLOAD=$(echo "$RAW" | sed '/^gpgsig /,/^[^ ]/{/^gpgsig /d; /^ /d;}')
 
-            # --- Query the CI's own Groundwire ship ---
-            # The CI's ship has ord-watcher running, which indexes on-chain
-            # Groundwire attestations into Jael. We ask it whether the
-            # signer's @p has a valid on-chain identity.
+            echo "Commit ${SHORT}: signed by ${SIGNER}, verifying against on-chain key..."
+
+            # --- Send to CI's Groundwire ship for full verification ---
+            # The ship checks:
+            #   1. Is the signer attested on-chain? (Jael deed lookup)
+            #   2. Does the Ed25519 signature match the on-chain pass?
             RESPONSE=$(curl -s -f \
+              -X POST \
+              -H "Content-Type: application/json" \
               -H "Cookie: ${GROUNDWIRE_AUTH}" \
-              "${GROUNDWIRE_ENDPOINT}/gwgh/check-id/${SIGNER}") || {
+              "${GROUNDWIRE_ENDPOINT}/gwgh/verify-commit" \
+              -d "$(jq -n \
+                --arg signer "$SIGNER" \
+                --arg signature "$SIGNATURE" \
+                --arg payload "$PAYLOAD" \
+                '{signer: $signer, signature: $signature, payload: $payload}')") || {
               echo "::error::Commit ${SHORT}: failed to reach CI Groundwire ship"
               RESULTS="${RESULTS}UNREACHABLE ${SHORT}\n"
               VERIFIED="false"
@@ -92,12 +101,12 @@ jobs:
             }
 
             # --- Parse verification response ---
-            ATTESTED=$(echo "$RESPONSE" | jq -r '.attested // false')
+            VALID=$(echo "$RESPONSE" | jq -r '.verified // false')
 
-            if [ "$ATTESTED" != "true" ]; then
+            if [ "$VALID" != "true" ]; then
               ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error // "unknown"')
-              echo "::error::Commit ${SHORT}: ${SIGNER} not attested on-chain (${ERROR_MSG})"
-              RESULTS="${RESULTS}UNATTESTED ${SHORT} ${SIGNER}\n"
+              echo "::error::Commit ${SHORT}: ${SIGNER} verification failed (${ERROR_MSG})"
+              RESULTS="${RESULTS}FAILED ${SHORT} ${SIGNER} ${ERROR_MSG}\n"
               VERIFIED="false"
             else
               LIFE=$(echo "$RESPONSE" | jq -r '.life // "?"')
@@ -142,7 +151,7 @@ jobs:
               '',
               '### Why?',
               'This repository requires contributors to prove ownership of an onchain Groundwire identity.',
-              'Commit signatures are verified against the CI\'s own Groundwire node, which indexes on-chain attestations.',
+              'Commit signatures are cryptographically verified against the signer\'s on-chain networking key.',
               '',
               '### How to fix this',
               '1. **Get a Groundwire ID** — [groundwire.network/get-started](https://groundwire.network/get-started)',
