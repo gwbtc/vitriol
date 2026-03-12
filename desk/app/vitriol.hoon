@@ -53,6 +53,35 @@
     ?:  &((gte c 'A') (lte c 'F'))  (add 10 (sub c 'A'))
     !!
   $(chars t.chars, i +(i), val (add val (lsh [2 i] nib)))
+::
+++  deed-safe
+  |=  [=bowl:gall who=@p]
+  ^-  (unit [life=@ud pass=@])
+  =/  result=(each (unit point:jael) tang)
+    %-  mule  |.
+    .^  (unit point:jael)
+        %j
+        /(scot %p our.bowl)/pynt/(scot %da now.bowl)/(scot %p who)
+    ==
+  ?.  ?=(%& -.result)  ~
+  ?~  p.result  ~
+  =/  pnt  u.p.result
+  ?:  =(0 life.pnt)  ~
+  =/  ky  (~(get by keys.pnt) life.pnt)
+  ?~  ky  ~
+  `[life.pnt pass.u.ky]
+::
+++  ring-safe
+  |=  [=bowl:gall lyf=@ud]
+  ^-  (unit @)
+  =/  result=(each * tang)
+    %-  mule  |.
+    .^  *
+        %j
+        /(scot %p our.bowl)/vein/(scot %da now.bowl)/(scot %ud lyf)
+    ==
+  ?.  ?=(%& -.result)  ~
+  `;;(@ p.result)
 --
 ^-  agent:gall
 =|  state-1
@@ -97,19 +126,14 @@
       ::  GET /vitriol/pubkey — return this ship's on-chain networking key
       ::
         [%vitriol %pubkey ~]
-      =/  deed-result
-        %-  mule  |.
-        .^  [life=@ud pass=@ sec=(unit @)]
-            %j
-            /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p our.bowl)/1
-        ==
+      =/  deed  (deed-safe bowl our.bowl)
       =/  result=json
-        ?:  ?=(%| -.deed-result)
+        ?~  deed
           (pairs:enjs:format ~[['configured' b+%.n] ['error' s+'no keys in Jael']])
         %-  pairs:enjs:format
         :~  ['configured' b+%.y]
-            ['pass' s+(to-hex 130 pass.p.deed-result)]
-            ['life' (numb:enjs:format life.p.deed-result)]
+            ['pass' s+(to-hex 130 pass.u.deed)]
+            ['life' (numb:enjs:format life.u.deed)]
             ['ship' s+(scot %p our.bowl)]
         ==
       :_  this
@@ -123,29 +147,19 @@
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
       ::  get our deed and ring from Jael
-      =/  deed-result
-        %-  mule  |.
-        .^  [life=@ud pass=@ sec=(unit @)]
-            %j
-            /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p our.bowl)/1
-        ==
-      ?:  ?=(%| -.deed-result)
+      =/  deed  (deed-safe bowl our.bowl)
+      ?~  deed
         =/  err=json  (pairs:enjs:format ['error' s+'no keys in Jael']~)
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
-      =/  ring-result
-        %-  mule  |.
-        .^  @
-            %j
-            /(scot %p our.bowl)/vein/(scot %da now.bowl)/(scot %ud life.p.deed-result)
-        ==
-      ?:  ?=(%| -.ring-result)
+      =/  ring  (ring-safe bowl life.u.deed)
+      ?~  ring
         =/  err=json  (pairs:enjs:format ['error' s+'cannot read private key from Jael']~)
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
       ::  extract Ed25519 signing seed from ring
       ::  ring format (suite B): 1 byte 'B' + 32 bytes sgn-seed + 32 bytes cry-seed
-      =/  sgn-seed  (end 8 (rsh 3 p.ring-result))
+      =/  sgn-seed  (end 8 (rsh 3 u.ring))
       =/  jon  (need (de:json:html q:(need body.request.req)))
       =/  content  (so:dejs:format (~(got by ((om:dejs:format same) jon)) 'content'))
       =/  msg=octs  [(met 3 content) content]
@@ -154,7 +168,7 @@
         %-  pairs:enjs:format
         :~  ['signature' s+(to-hex 128 sig)]
             ['signer_id' s+(scot %p our.bowl)]
-            ['pass' s+(to-hex 130 pass.p.deed-result)]
+            ['pass' s+(to-hex 130 pass.u.deed)]
         ==
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
@@ -175,13 +189,8 @@
       ::  resolve signer
       =/  who  (slav %p signer-cord)
       ::  scry Jael for signer's on-chain deed
-      =/  deed-result
-        %-  mule  |.
-        .^  [life=@ud pass=@ sec=(unit @)]
-            %j
-            /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p who)/1
-        ==
-      ?:  ?=(%| -.deed-result)
+      =/  deed  (deed-safe bowl who)
+      ?~  deed
         =/  result=json
           %-  pairs:enjs:format
           :~  ['verified' b+%.n]
@@ -190,7 +199,7 @@
           ==
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server result))
-      ?:  =(0 life.p.deed-result)
+      ?:  =(0 life.u.deed)
         =/  result=json
           %-  pairs:enjs:format
           :~  ['verified' b+%.n]
@@ -201,7 +210,7 @@
         (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::  extract Ed25519 signing pubkey from on-chain pass
       ::  pass format (suite b): 1 byte 'b' + 32 bytes sgn-pub + 32 bytes cry-pub
-      =/  sgn-pub  (end 8 (rsh 3 pass.p.deed-result))
+      =/  sgn-pub  (end 8 (rsh 3 pass.u.deed))
       =/  sig=@  (from-hex sig-hex)
       =/  msg=octs  [(met 3 payload) payload]
       =/  valid=?  (veri-octs:ed:crypto sig msg sgn-pub)
@@ -210,7 +219,7 @@
           %-  pairs:enjs:format
           :~  ['verified' b+%.y]
               ['signer' s+signer-cord]
-              ['life' (numb:enjs:format life.p.deed-result)]
+              ['life' (numb:enjs:format life.u.deed)]
           ==
         %-  pairs:enjs:format
         :~  ['verified' b+%.n]
@@ -228,20 +237,15 @@
         (give-simple-payload:app:server eyre-id not-found:gen:server)
       =/  who-knot=@t  i.t.t.site.rl
       =/  who  (slav %p who-knot)
-      =/  deed
-        %-  mule  |.
-        .^  [life=@ud pass=@ sec=(unit @)]
-            %j
-            /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p who)/1
-        ==
+      =/  deed  (deed-safe bowl who)
       =/  result=json
-        ?:  ?=(%| -.deed)
+        ?~  deed
           %-  pairs:enjs:format
           :~  ['attested' b+%.n]
               ['ship' s+who-knot]
               ['error' s+'ship not found in Jael']
           ==
-        ?:  =(0 life.p.deed)
+        ?:  =(0 life.u.deed)
           %-  pairs:enjs:format
           :~  ['attested' b+%.n]
               ['ship' s+who-knot]
@@ -250,7 +254,7 @@
         %-  pairs:enjs:format
         :~  ['attested' b+%.y]
             ['ship' s+who-knot]
-            ['life' (numb:enjs:format life.p.deed)]
+            ['life' (numb:enjs:format life.u.deed)]
         ==
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
@@ -269,20 +273,15 @@
   ^-  (unit (unit cage))
   ?+  pole  ~
       [%x %pubkey %json ~]
-    =/  deed-result
-      %-  mule  |.
-      .^  [life=@ud pass=@ sec=(unit @)]
-          %j
-          /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p our.bowl)/1
-      ==
+    =/  deed  (deed-safe bowl our.bowl)
     :-  ~  :-  ~  :-  %json
     !>  ^-  json
-    ?:  ?=(%| -.deed-result)
+    ?~  deed
       (pairs:enjs:format ['configured' b+%.n]~)
     %-  pairs:enjs:format
     :~  ['configured' b+%.y]
-        ['pass' s+(to-hex 130 pass.p.deed-result)]
-        ['life' (numb:enjs:format life.p.deed-result)]
+        ['pass' s+(to-hex 130 pass.u.deed)]
+        ['life' (numb:enjs:format life.u.deed)]
     ==
   ==
 ::
