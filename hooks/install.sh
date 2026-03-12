@@ -6,10 +6,10 @@
 #   ./install.sh <ship-url> [auth-cookie]
 #
 # This configures git globally to sign all commits with your Groundwire key.
-# Your ship must be running the %gwgh agent with a signing key configured.
+# Your ship must be running the %vitriol agent with a signing key configured.
 #
 # Example:
-#   ./install.sh http://localhost:8080/gwgh "urbauth-~zod=0v5.abc..."
+#   ./install.sh http://localhost:8080/vitriol "urbauth-~zod=0v5.abc..."
 #
 
 set -euo pipefail
@@ -20,7 +20,7 @@ SIGN_PROGRAM="${SCRIPT_DIR}/groundwire-sign"
 if [ $# -lt 1 ]; then
   echo "Usage: $0 <ship-url> [auth-cookie]"
   echo ""
-  echo "  ship-url     Base URL of your ship's gwgh endpoint (e.g. http://localhost:8080/gwgh)"
+  echo "  ship-url     Base URL of your ship's vitriol endpoint (e.g. http://localhost:8080/vitriol)"
   echo "  auth-cookie  Auth cookie for your ship (e.g. urbauth-~zod=0v5.abc...)"
   exit 1
 fi

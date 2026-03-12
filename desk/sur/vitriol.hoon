@@ -1,4 +1,4 @@
-::  /sur/gwgh/hoon
+::  /sur/vitriol/hoon
 ::  Groundwire for GitHub — types
 ::
 |%

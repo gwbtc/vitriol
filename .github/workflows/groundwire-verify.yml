@@ -88,7 +88,7 @@ jobs:
               -X POST \
               -H "Content-Type: application/json" \
               -H "Cookie: ${GROUNDWIRE_AUTH}" \
-              "${GROUNDWIRE_ENDPOINT}/gwgh/verify-commit" \
+              "${GROUNDWIRE_ENDPOINT}/vitriol/verify-commit" \
               -d "$(jq -n \
                 --arg signer "$SIGNER" \
                 --arg signature "$SIGNATURE" \

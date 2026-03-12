@@ -1,9 +1,9 @@
-::  /app/gwgh/hoon
+::  /app/vitriol/hoon
 ::  Groundwire for GitHub — commit signing & on-chain identity verification
 ::
 ::  Two modes:
-::    Signer (committer's ship):  POST /gwgh/sign
-::    Verifier (CI's ship):       POST /gwgh/verify-commit
+::    Signer (committer's ship):  POST /vitriol/sign
+::    Verifier (CI's ship):       POST /vitriol/verify-commit
 ::
 ::  The signer signs commit content with the ship's Ed25519 networking
 ::  key — the same key attested on-chain via a Groundwire inscription.
@@ -64,7 +64,7 @@
 ++  on-init
   ^-  (quip card _this)
   :_  this
-  :~  [%pass /eyre/connect %arvo %e %connect [~ /gwgh] dap.bowl]
+  :~  [%pass /eyre/connect %arvo %e %connect [~ /vitriol] dap.bowl]
   ==
 ::
 ++  on-save   !>(state)
@@ -94,9 +94,9 @@
       :_  this
       (give-simple-payload:app:server eyre-id not-found:gen:server)
       ::
-      ::  GET /gwgh/pubkey — return this ship's on-chain networking key
+      ::  GET /vitriol/pubkey — return this ship's on-chain networking key
       ::
-        [%gwgh %pubkey ~]
+        [%vitriol %pubkey ~]
       =/  deed-result
         %-  mule  |.
         .^  [life=@ud pass=@ sec=(unit @)]
@@ -115,9 +115,9 @@
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
-      ::  POST /gwgh/sign — sign commit content with networking key
+      ::  POST /vitriol/sign — sign commit content with networking key
       ::
-        [%gwgh %sign ~]
+        [%vitriol %sign ~]
       ?.  =(meth %'POST')
         =/  err=json  (pairs:enjs:format ['error' s+'POST required']~)
         :_  this
@@ -159,10 +159,10 @@
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
-      ::  POST /gwgh/verify-commit — verify signature against on-chain key
+      ::  POST /vitriol/verify-commit — verify signature against on-chain key
       ::  Body: {"signer":"~ship", "signature":"hex...", "payload":"..."}
       ::
-        [%gwgh %verify-commit ~]
+        [%vitriol %verify-commit ~]
       ?.  =(meth %'POST')
         =/  err=json  (pairs:enjs:format ['error' s+'POST required']~)
         :_  this
@@ -220,9 +220,9 @@
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
-      ::  GET /gwgh/check-id/~ship — check if @p has on-chain Groundwire ID
+      ::  GET /vitriol/check-id/~ship — check if @p has on-chain Groundwire ID
       ::
-        [%gwgh %check-id *]
+        [%vitriol %check-id *]
       ?~  t.t.site.rl
         :_  this
         (give-simple-payload:app:server eyre-id not-found:gen:server)

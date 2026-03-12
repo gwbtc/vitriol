@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # groundwire-sign — custom gpg.program for signing git commits with a
-# Groundwire key via a remote signing service (an Urbit ship running %gwgh).
+# Groundwire key via a remote signing service (an Urbit ship running %vitriol).
 #
 # Git calls gpg.program with:
 #   gpg.program --status-fd=2 -bsau <key-id>
@@ -18,7 +18,7 @@
 # the committer's self-reported pubkey.
 #
 # Configuration (git config or env vars):
-#   GROUNDWIRE_SIGN_ENDPOINT  — base URL of the committer's ship (e.g. http://localhost:8080/gwgh)
+#   GROUNDWIRE_SIGN_ENDPOINT  — base URL of the committer's ship (e.g. http://localhost:8080/vitriol)
 #   GROUNDWIRE_SIGN_TOKEN     — auth cookie for the ship
 #
 # Install:

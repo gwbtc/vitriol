@@ -19,12 +19,12 @@ contributor's ship          GitHub Actions          CI's ship
 Three pieces:
 
 1. **`hooks/groundwire-sign`** — custom `gpg.program` that sends commit content to the contributor's ship for signing
-2. **`desk/`** — Urbit `%gwgh` Gall agent that handles signing and verification
+2. **`desk/`** — Urbit `%vitriol` Gall agent that handles signing and verification
 3. **`.github/workflows/groundwire-verify.yml`** — GitHub Action that gates PRs on valid Groundwire signatures
 
 ## Ship setup
 
-The `%gwgh` desk needs to be installed on two ships:
+The `%vitriol` desk needs to be installed on two ships:
 
 - **Signing ship** — the contributor's local ship, signs commits
 - **Verification ship** — a publicly reachable ship used by CI to verify signatures against on-chain keys
@@ -36,31 +36,31 @@ Both run the same agent. The signing ship uses the `/sign` endpoint (needs acces
 On each ship, in dojo:
 
 ```
-|merge %gwgh our %base
-|mount %gwgh
+|merge %vitriol our %base
+|mount %vitriol
 ```
 
 Then copy the desk files from this repo into the mounted directory (replace `<pier>` with the ship's pier path):
 
 ```bash
-cp desk/app/gwgh.hoon <pier>/gwgh/app/gwgh.hoon
-cp desk/lib/server.hoon <pier>/gwgh/lib/server.hoon
-cp desk/sur/gwgh.hoon <pier>/gwgh/sur/gwgh.hoon
-cp desk/desk.bill <pier>/gwgh/desk.bill
-cp desk/sys.kelvin <pier>/gwgh/sys.kelvin
+cp desk/app/vitriol.hoon <pier>/vitriol/app/vitriol.hoon
+cp desk/lib/server.hoon <pier>/vitriol/lib/server.hoon
+cp desk/sur/vitriol.hoon <pier>/vitriol/sur/vitriol.hoon
+cp desk/desk.bill <pier>/vitriol/desk.bill
+cp desk/sys.kelvin <pier>/vitriol/sys.kelvin
 ```
 
 Back in dojo, commit and install:
 
 ```
-|commit %gwgh
-|install our %gwgh
+|commit %vitriol
+|install our %vitriol
 ```
 
-The agent binds to `/gwgh` on Eyre on init. Verify it's running:
+The agent binds to `/vitriol` on Eyre on init. Verify it's running:
 
 ```bash
-curl -s http://<ship-url>/gwgh/pubkey -H "Cookie: <auth-cookie>"
+curl -s http://<ship-url>/vitriol/pubkey -H "Cookie: <auth-cookie>"
 ```
 
 You should see the ship's pass, life, and @p.
@@ -69,17 +69,17 @@ You should see the ship's pass, life, and @p.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/gwgh/pubkey` | Ship's networking key from Jael |
-| POST | `/gwgh/sign` | Sign commit content with networking key |
-| POST | `/gwgh/verify-commit` | Verify signature against signer's on-chain key |
-| GET | `/gwgh/check-id/~ship` | Check if a ship is attested on-chain |
+| GET | `/vitriol/pubkey` | Ship's networking key from Jael |
+| POST | `/vitriol/sign` | Sign commit content with networking key |
+| POST | `/vitriol/verify-commit` | Verify signature against signer's on-chain key |
+| GET | `/vitriol/check-id/~ship` | Check if a ship is attested on-chain |
 
 ## Contributor setup
 
 ### Quick install
 
 ```bash
-./hooks/install.sh <your-ship-url>/gwgh "<auth-cookie>"
+./hooks/install.sh <your-ship-url>/vitriol "<auth-cookie>"
 ```
 
 This configures git globally to sign all commits with your Groundwire key.
@@ -89,7 +89,7 @@ This configures git globally to sign all commits with your Groundwire key.
 ```bash
 git config --global gpg.program /path/to/hooks/groundwire-sign
 git config --global commit.gpgsign true
-git config --global groundwire.sign-endpoint <your-ship-url>/gwgh
+git config --global groundwire.sign-endpoint <your-ship-url>/vitriol
 git config --global groundwire.sign-token "<auth-cookie>"
 ```
 
@@ -129,7 +129,7 @@ Copy `.github/workflows/groundwire-verify.yml` into your repo. It runs on every 
 
 1. Iterates over all commits in the PR
 2. Extracts the Groundwire signature from each commit's `gpgsig` header
-3. Sends the signature, signer @p, and commit payload to the CI ship's `/gwgh/verify-commit`
+3. Sends the signature, signer @p, and commit payload to the CI ship's `/vitriol/verify-commit`
 4. The CI ship looks up the signer's on-chain public key in Jael and verifies the Ed25519 signature
 5. Fails the check and comments on the PR if any commit is unsigned or unverified
 
