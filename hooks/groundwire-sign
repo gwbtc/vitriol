@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # groundwire-sign — custom gpg.program for signing git commits with a
-# Groundwire key via a remote signing service.
+# Groundwire key via a remote signing service (an Urbit ship running %gwgh).
 #
 # Git calls gpg.program with:
 #   gpg.program --status-fd=2 -bsau <key-id>
@@ -9,13 +9,17 @@
 #
 # This script:
 #   1. Reads the commit content from stdin
-#   2. Sends it to the configured Groundwire signing service
-#   3. Returns the signature on stdout
+#   2. Sends it to the committer's Groundwire ship for signing
+#   3. Returns a structured signature block on stdout
 #   4. Emits GPG-compatible status on fd 2
 #
+# The signature block includes the signer's @p so the CI verifier can
+# look up the identity on-chain via its own ship, rather than trusting
+# the committer's self-reported pubkey.
+#
 # Configuration (git config or env vars):
-#   GROUNDWIRE_SIGN_ENDPOINT  — URL of the signing service
-#   GROUNDWIRE_SIGN_TOKEN     — auth token for the signing service
+#   GROUNDWIRE_SIGN_ENDPOINT  — base URL of the committer's ship (e.g. http://localhost:8080/gwgh)
+#   GROUNDWIRE_SIGN_TOKEN     — auth cookie for the ship
 #
 # Install:
 #   git config --global gpg.program /path/to/groundwire-sign
@@ -38,8 +42,6 @@ fi
 
 # --- Parse git's gpg arguments -----------------------------------------------
 
-# Git passes flags like: --status-fd=2 -bsau <key-id>
-# We need to extract the key-id and handle --status-fd for status output.
 STATUS_FD=""
 KEY_ID=""
 
@@ -57,7 +59,6 @@ while [ $# -gt 0 ]; do
       KEY_ID="$1"
       ;;
     *)
-      # ignore other flags
       ;;
   esac
   shift
@@ -77,7 +78,7 @@ PAYLOAD=$(jq -n \
 RESPONSE=$(curl -s -f \
   -X POST \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Cookie: ${TOKEN}" \
   "${ENDPOINT}/sign" \
   -d "$PAYLOAD") || {
   echo "groundwire-sign: signing service request failed" >&2
@@ -86,15 +87,29 @@ RESPONSE=$(curl -s -f \
 
 SIGNATURE=$(echo "$RESPONSE" | jq -r '.signature // empty')
 SIGNER_ID=$(echo "$RESPONSE" | jq -r '.signer_id // empty')
+PUBKEY=$(echo "$RESPONSE" | jq -r '.pubkey // empty')
 
 if [ -z "$SIGNATURE" ]; then
   echo "groundwire-sign: no signature in response" >&2
   exit 1
 fi
 
-# --- Output signature to stdout (git captures this as gpgsig) -----------------
+if [ -z "$SIGNER_ID" ]; then
+  echo "groundwire-sign: no signer_id in response" >&2
+  exit 1
+fi
 
-echo "$SIGNATURE"
+# --- Output structured signature to stdout ------------------------------------
+# Git captures this verbatim as the gpgsig header.
+# The CI verifier parses this to extract the signer's @p and signature.
+
+cat <<GWSIG
+-----BEGIN GROUNDWIRE SIGNATURE-----
+signer:${SIGNER_ID}
+pubkey:${PUBKEY}
+sig:${SIGNATURE}
+-----END GROUNDWIRE SIGNATURE-----
+GWSIG
 
 # --- Emit GPG-compatible status on status-fd ----------------------------------
 

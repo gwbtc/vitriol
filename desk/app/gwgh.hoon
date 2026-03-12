@@ -1,6 +1,14 @@
 ::  /app/gwgh/hoon
 ::  Groundwire for GitHub — signing & verification agent
 ::
+::  Two modes:
+::    Signer (committer's ship):  POST /gwgh/sign
+::    Verifier (CI's ship):       GET  /gwgh/check-id/~ship-name
+::
+::  The signer produces a structured signature containing the ship's @p.
+::  The verifier checks whether a given @p has an on-chain Groundwire
+::  attestation by scrying Jael (populated by ord-watcher).
+::
 /-  gwgh
 /+  default-agent, server, ecdsa
 |%
@@ -50,6 +58,8 @@
       :_  this
       (give-simple-payload:app:server eyre-id not-found:gen:server)
       ::
+      ::  GET /gwgh/pubkey — return this ship's signing pubkey
+      ::
         [%gwgh %pubkey ~]
       =/  result=json
         ?~  pubkey
@@ -61,6 +71,8 @@
         ==
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::
+      ::  POST /gwgh/sign — sign commit content with this ship's key
       ::
         [%gwgh %sign ~]
       ?.  =(meth %'POST')
@@ -84,6 +96,44 @@
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
+      ::  GET /gwgh/check-id/~ship — check if @p has on-chain Groundwire ID
+      ::  Scries Jael for the ship's keys (populated by ord-watcher).
+      ::
+        [%gwgh %check-id *]
+      ?~  t.t.site.rl
+        :_  this
+        (give-simple-payload:app:server eyre-id not-found:gen:server)
+      =/  who-knot=@t  i.t.t.site.rl
+      =/  who  (slav %p who-knot)
+      =/  deed
+        %-  mule  |.
+        .^  [life=@ud pass=@ sec=(unit @)]
+            %j
+            /(scot %p our.bowl)/deed/(scot %da now.bowl)/(scot %p who)/1
+        ==
+      =/  result=json
+        ?:  ?=(%| -.deed)
+          %-  pairs:enjs:format
+          :~  ['attested' b+%.n]
+              ['ship' s+who-knot]
+              ['error' s+'ship not found in Jael']
+          ==
+        ?:  =(0 life.p.deed)
+          %-  pairs:enjs:format
+          :~  ['attested' b+%.n]
+              ['ship' s+who-knot]
+              ['error' s+'ship has no keys (life=0)']
+          ==
+        %-  pairs:enjs:format
+        :~  ['attested' b+%.y]
+            ['ship' s+who-knot]
+            ['life' (numb:enjs:format life.p.deed)]
+        ==
+      :_  this
+      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::
+      ::  GET /gwgh/verify/<pubkey> — check pubkey against local key list
+      ::
         [%gwgh %verify *]
       ?~  t.t.site.rl
         :_  this
@@ -101,6 +151,8 @@
         ==
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::
+      ::  GET/POST /gwgh/keys — list or add recognized pubkeys
       ::
         [%gwgh %keys ~]
       ?:  =(meth %'POST')
