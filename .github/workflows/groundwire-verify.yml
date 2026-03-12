@@ -1,0 +1,182 @@
+name: Groundwire PR Verification
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+env:
+  # The repo owner's Groundwire ship HTTP endpoint (repo secret)
+  GROUNDWIRE_ENDPOINT: ${{ secrets.GROUNDWIRE_ENDPOINT }}
+  # Auth cookie for the Groundwire ship's MCP server (repo secret)
+  GROUNDWIRE_AUTH: ${{ secrets.GROUNDWIRE_AUTH }}
+
+jobs:
+  verify-groundwire-id:
+    name: Verify Groundwire ID
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR commits
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Extract and verify commit signatures
+        id: verify
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          COMMITS=$(git rev-list "${BASE_SHA}..${HEAD_SHA}")
+          COMMIT_COUNT=$(echo "$COMMITS" | wc -l)
+
+          echo "Verifying ${COMMIT_COUNT} commit(s) in ${BASE_SHA:0:8}..${HEAD_SHA:0:8}"
+
+          VERIFIED="true"
+          RESULTS=""
+
+          for COMMIT in $COMMITS; do
+            SHORT="${COMMIT:0:8}"
+            RAW=$(git cat-file commit "$COMMIT")
+
+            # --- Check for gpgsig header ---
+            if ! echo "$RAW" | grep -q '^gpgsig '; then
+              echo "::error::Commit ${SHORT} is not signed."
+              RESULTS="${RESULTS}UNSIGNED ${SHORT}\n"
+              VERIFIED="false"
+              continue
+            fi
+
+            # --- Extract the signature block ---
+            # gpgsig header spans multiple lines; continuation lines are indented with a space
+            SIG=$(echo "$RAW" | sed -n '/^gpgsig /{s/^gpgsig //; p; :a; n; /^ /{ s/^ //; p; ba; }; q}')
+
+            # --- Build the signed payload ---
+            # Git signs the commit object with the gpgsig header stripped.
+            # Reconstruct it so we can verify independently.
+            PAYLOAD=$(echo "$RAW" | sed '/^gpgsig /,/^[^ ]/{/^gpgsig /d; /^ /d;}')
+
+            # Store for verification step
+            echo "$SIG" > "/tmp/sig-${COMMIT}"
+            echo "$PAYLOAD" > "/tmp/payload-${COMMIT}"
+
+            # --- Recover public key from signature ---
+            # TODO: implement secp256k1 key recovery from the signature + payload
+            # The signing service produces a recoverable signature (65 bytes:
+            # 1 byte recovery flag + 32 bytes r + 32 bytes s) over the
+            # SHA-256 hash of the commit payload.
+            #
+            # PUBKEY=$(groundwire-recover /tmp/sig-${COMMIT} /tmp/payload-${COMMIT})
+            PUBKEY="TODO_RECOVERED_KEY"
+
+            # --- Query the repo owner's Groundwire ship ---
+            # The ship maintains its own list of recognized public keys
+            # (indexed from on-chain Groundwire ID attestations via Jael).
+            RESPONSE=$(curl -s -f \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -H "Cookie: ${GROUNDWIRE_AUTH}" \
+              "${GROUNDWIRE_ENDPOINT}/mcp" \
+              -d "{
+                \"jsonrpc\": \"2.0\",
+                \"method\": \"tools/call\",
+                \"id\": 1,
+                \"params\": {
+                  \"name\": \"scry-agent\",
+                  \"arguments\": {
+                    \"agent\": \"jael\",
+                    \"path\": \"/groundwire/key/${PUBKEY}\"
+                  }
+                }
+              }") || {
+              echo "::error::Commit ${SHORT}: failed to reach Groundwire ship"
+              RESULTS="${RESULTS}UNREACHABLE ${SHORT}\n"
+              VERIFIED="false"
+              continue
+            }
+
+            # --- Parse verification response ---
+            # TODO: finalize the Jael response format
+            # Expected success: { "result": { "content": [{ "text": "~sampel-palnet" }] } }
+            # Expected failure: { "error": { ... } }
+            if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+              echo "::error::Commit ${SHORT}: key not recognized by Groundwire PKI"
+              RESULTS="${RESULTS}UNVERIFIED ${SHORT}\n"
+              VERIFIED="false"
+            else
+              GWID=$(echo "$RESPONSE" | jq -r '.result.content[0].text // "unknown"')
+              echo "Commit ${SHORT}: verified (Groundwire ID: ${GWID})"
+              RESULTS="${RESULTS}VERIFIED ${SHORT} ${GWID}\n"
+            fi
+          done
+
+          echo "verified=${VERIFIED}" >> "$GITHUB_OUTPUT"
+          echo -e "$RESULTS" > /tmp/verification-results.txt
+
+      - name: Gate PR on verification
+        if: steps.verify.outputs.verified != 'true'
+        run: |
+          echo "::error::This PR contains commits not signed by a recognized Groundwire ID."
+          echo ""
+          cat /tmp/verification-results.txt
+          echo ""
+          echo "Contributors must sign commits with a Groundwire key."
+          echo "This check must pass before the PR will be reviewed."
+          exit 1
+
+      - name: Comment on unverified PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let results = '';
+            try {
+              results = fs.readFileSync('/tmp/verification-results.txt', 'utf8').trim();
+            } catch (_) {}
+
+            const body = [
+              '## Groundwire Verification Failed',
+              '',
+              'This PR will not be reviewed because commits are not signed by a recognized [Groundwire ID](https://groundwire.network).',
+              '',
+              '```',
+              results,
+              '```',
+              '',
+              '### Why?',
+              'This repository requires contributors to prove ownership of an onchain Groundwire identity.',
+              'Commit signatures are verified against the repository owner\'s Groundwire PKI node.',
+              '',
+              '### How to fix this',
+              '1. **Get a Groundwire ID** — [groundwire.network/get-started](https://groundwire.network/get-started)',
+              '2. **Install commit signing** — `./hooks/install.sh <your-signing-endpoint>`',
+              '3. **Re-sign your commits** — `git rebase --exec "true" HEAD~N` (after configuring signing)',
+              '',
+              '---',
+              '*This repository is protected by [Groundwire for GitHub](https://groundwire.network/github).*'
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.data?.find(c =>
+              c.body?.includes('Groundwire Verification Failed')
+            );
+
+            if (!existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
