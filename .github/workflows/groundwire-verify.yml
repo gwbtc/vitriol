@@ -84,6 +84,7 @@ jobs:
             # --- Extract ecash fields if present ---
             ECASH_CIPHERTEXT=$(echo "$SIG_BLOCK" | grep '^ecash-ciphertext:' | cut -d: -f2)
             ECASH_EPH_PUBKEY=$(echo "$SIG_BLOCK" | grep '^ecash-ephemeral-pubkey:' | cut -d: -f2)
+            ECASH_MAC=$(echo "$SIG_BLOCK" | grep '^ecash-mac:' | cut -d: -f2)
             ECASH_TOKENS=$(echo "$SIG_BLOCK" | grep '^ecash-tokens:' | cut -d: -f2-)
             ECASH_AMOUNT=$(echo "$SIG_BLOCK" | grep '^ecash-amount:' | cut -d: -f2)
 
@@ -96,8 +97,8 @@ jobs:
             VERIFY_EXPR='{signer: $signer, signature: $signature, payload: $payload'
 
             if [ -n "$ECASH_CIPHERTEXT" ]; then
-              VERIFY_ARGS+=(--arg ecash_ciphertext "$ECASH_CIPHERTEXT" --arg ecash_ephemeral_pubkey "$ECASH_EPH_PUBKEY")
-              VERIFY_EXPR+=', ecash_ciphertext: $ecash_ciphertext, ecash_ephemeral_pubkey: $ecash_ephemeral_pubkey'
+              VERIFY_ARGS+=(--arg ecash_ciphertext "$ECASH_CIPHERTEXT" --arg ecash_ephemeral_pubkey "$ECASH_EPH_PUBKEY" --arg ecash_mac "$ECASH_MAC")
+              VERIFY_EXPR+=', ecash_ciphertext: $ecash_ciphertext, ecash_ephemeral_pubkey: $ecash_ephemeral_pubkey, ecash_mac: $ecash_mac'
             elif [ -n "$ECASH_TOKENS" ]; then
               VERIFY_ARGS+=(--argjson ecash_tokens "$ECASH_TOKENS")
               VERIFY_EXPR+=', ecash_tokens: $ecash_tokens'
@@ -120,6 +121,32 @@ jobs:
             }
 
             # --- Parse verification response ---
+            # If ecash tokens are present, verify-commit returns {status: "pending", verify_id: "..."}
+            # and performs async NUT-03 swap. Poll verify-status until complete.
+            VERIFY_STATUS=$(echo "$RESPONSE" | jq -r '.status // empty')
+            if [ "$VERIFY_STATUS" = "pending" ]; then
+              VERIFY_ID=$(echo "$RESPONSE" | jq -r '.verify_id // empty')
+              echo "Commit ${SHORT}: ecash verification pending, polling..."
+              for i in $(seq 1 60); do
+                sleep 5
+                POLL_RESPONSE=$(curl -s -f \
+                  -H "Cookie: ${GROUNDWIRE_AUTH}" \
+                  "${GROUNDWIRE_ENDPOINT}/vitriol/verify-status/${VERIFY_ID}") || {
+                  echo "::error::Commit ${SHORT}: failed to poll verify-status"
+                  break
+                }
+                POLL_STATUS=$(echo "$POLL_RESPONSE" | jq -r '.status // empty')
+                if [ "$POLL_STATUS" != "pending" ]; then
+                  RESPONSE="$POLL_RESPONSE"
+                  break
+                fi
+                if [ "$i" = "60" ]; then
+                  echo "::error::Commit ${SHORT}: ecash verification timed out after 5 minutes"
+                  RESPONSE='{"verified":false,"error":"ecash verification timed out"}'
+                fi
+              done
+            fi
+
             VALID=$(echo "$RESPONSE" | jq -r '.verified // false')
 
             if [ "$VALID" != "true" ]; then
