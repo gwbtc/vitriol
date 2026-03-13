@@ -176,9 +176,12 @@
 ::
 ::  Authenticated encryption via Curve25519 ECDH.
 ::
-::  Encrypt: ephemeral keypair → DH shared secret → derive enc_key
-::  and mac_key → XOR plaintext with counter-mode keystream →
-::  HMAC-SHA256 the ciphertext → return [eph-pub ciphertext mac].
+::  Encrypt: ephemeral keypair (from eny) → DH shared secret →
+::  derive enc_key = SHA-256(shared || 'encrypt') and
+::  mac_key = SHA-256(shared || 'authenticate') →
+::  XOR plaintext with counter-mode keystream from enc_key →
+::  MAC = SHA-256(mac_key || ciphertext) →
+::  return [eph-pub ciphertext mac].
 ::
 ::  Decrypt: DH shared secret → derive same keys → verify MAC →
 ::  XOR to recover plaintext.  Returns ~ on MAC failure.
@@ -1569,9 +1572,8 @@
     ::  TTL expired — swap these tokens at the mint for fresh ones
     =/  flight-mint=@t  mint.u.flight
     ?:  =('' flight-mint)
-      ::  no mint URL — just return tokens to wallet as-is
-      =/  existing=(list cashu-proof)  (~(gut by wallet) flight-mint ~)
-      =.  wallet  (~(put by wallet) flight-mint (weld existing proofs.u.flight))
+      ::  no mint URL — can't swap, discard (shouldn't happen)
+      ~&  >>>  %in-flight-no-mint-url
       =.  in-flight  (~(del by in-flight) fid)
       `this
     ::  get keyset id from first token
@@ -1601,7 +1603,7 @@
       :_  this
       :~  [%pass /iris/verify-keys/[fid] %arvo %i %request [%'GET' keys-url ~ ~] *outbound-config:iris]
       ==
-    ::  have keys — build swap directly
+    ::  have keys — build swap directly, skip key fetch
     =.  pending-verifies
       %+  ~(put by pending-verifies)  fid
       :*  our.bowl
@@ -1609,7 +1611,7 @@
           flight-mint
           proofs.u.flight
           (roll proofs.u.flight |=([p=cashu-proof a=@ud] (add a amount.p)))
-          %fetch-keys
+          %swap
           keyset-id
           *(list @t)
           *(list @)
@@ -1617,9 +1619,43 @@
           ''
       ==
     =.  in-flight  (~(del by in-flight) fid)
-    =/  keys-url=@t  (crip ;:(weld mint-clean "/v1/keys/" (trip keyset-id)))
-    :_  this
-    :~  [%pass /iris/verify-keys/[fid] %arvo %i %request [%'GET' keys-url ~ ~] *outbound-config:iris]
+    ::  build swap request inline using cached keys
+    =/  amounts=(list @ud)  (turn proofs.u.flight |=(p=cashu-proof amount.p))
+    =/  idx=@ud  0
+    =/  secrets=(list @t)  ~
+    =/  bfactors=(list @)  ~
+    =/  outputs=(list [amount=@ud id=@t b-hex=@t])  ~
+    |-  ^-  (quip card _this)
+    ?:  (gte idx (lent amounts))
+      =/  inputs-json=json
+        :-  %a
+        %+  turn  proofs.u.flight
+        |=  p=cashu-proof
+        %-  pairs:enjs:format
+        :~  ['amount' (numb:enjs:format amount.p)]
+            ['id' s+id.p]
+            ['secret' s+secret.p]
+            ['C' s+c.p]
+        ==
+      =/  swap-req=json  (build-swap-request:ca inputs-json (flop outputs))
+      =/  swap-body=@t  (en:json:html swap-req)
+      =/  swap-octs=octs  [(met 3 swap-body) swap-body]
+      =/  swap-url=@t  (crip (weld mint-clean "/v1/swap"))
+      =/  pv-entry  (~(got by pending-verifies) fid)
+      =.  pending-verifies
+        %+  ~(put by pending-verifies)  fid
+        pv-entry(step %swap, secrets (flop secrets), blinding-factors (flop bfactors))
+      :_  this
+      :~  [%pass /iris/verify-swap/[fid] %arvo %i %request [%'POST' swap-url ~[['content-type' 'application/json']] `swap-octs] *outbound-config:iris]
+      ==
+    =/  amt=@ud  (snag idx amounts)
+    =/  eny-seed=@  (sham [eny.bowl fid idx now.bowl])
+    =/  [b-hex=@t secret=@t blinding-factor=@]  (make-output:ca amt keyset-id eny-seed)
+    %=  $
+      idx  +(idx)
+      secrets  [secret secrets]
+      bfactors  [blinding-factor bfactors]
+      outputs  [[amt keyset-id b-hex] outputs]
     ==
   ::
   ::  -- Verify flow: fetch keyset keys for swap --

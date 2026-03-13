@@ -125,6 +125,7 @@ A landing page at `http://<ship-url>/vitriol` describes the app and lists all en
 | POST | `/vitriol/admin/set-price` | Set sats-per-PR price |
 | POST | `/vitriol/admin/ban` | Ban a ship (form) |
 | POST | `/vitriol/admin/unban` | Unban a ship (form) |
+| POST | `/vitriol/admin/withdraw` | Withdraw tokens to Lightning (mint + invoice) |
 
 ## Contributor setup
 
@@ -181,11 +182,13 @@ pass:<hex>
 sig:<hex>
 ecash-pubkey:<hex>
 ecash-amount:100
-ecash-tokens:[{"amount":64,"id":"...","secret":"...","C":"..."},...]
+ecash-ciphertext:<hex>
+ecash-ephemeral-pubkey:<hex>
+ecash-mac:<hex>
 -----END GROUNDWIRE SIGNATURE-----
 ```
 
-The `ecash-*` fields are only present when a maintainer price is configured and the committer has tokens.
+The `ecash-*` fields are only present when a maintainer price is configured and the committer has tokens. Tokens are encrypted with the maintainer's Curve25519 pubkey — the ciphertext contains both the mint URL and the token proofs.
 
 ## Maintainer setup
 
