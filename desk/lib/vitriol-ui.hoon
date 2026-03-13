@@ -112,7 +112,7 @@
         ;h3: for committers (signers)
         ;p: install the pre-commit hook in your repo. when you commit, the hook calls your ship's vitriol agent to sign the commit content with your networking key. the signature and your @p are embedded in the commit message.
         ;pre: ./hooks/install.sh
-        ;p: if the maintainer requires ecash payment, configure your ship's mint and load sats in the admin panel. the hook will encrypt tokens for the maintainer's pubkey and include them in the signature block.
+        ;p: if the maintainer requires ecash payment, configure your ship's mint and load sats in the admin panel. the hook will select tokens from your wallet and include them in the signature block.
         ;h3: for maintainers (verifiers)
         ;p: add vitriol's verify-commit endpoint to your CI pipeline. it checks the commit signature against the signer's on-chain Groundwire key via Jael.
         ;pre: POST /vitriol/verify-commit

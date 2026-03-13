@@ -144,6 +144,43 @@
   =/  pub=@  (scalarmult-base:ed:crypto sec)
   [sec pub]
 ::
+::
+::  Encrypt data with Curve25519 DH.  Generates an ephemeral keypair,
+::  computes a shared secret via shar:ed:crypto, derives a keystream
+::  from SHA-256 in counter mode, and XORs the plaintext.
+::  Returns [ephemeral-pub ciphertext].
+::
+++  ecash-encrypt
+  |=  [plaintext=@ pt-len=@ud recipient-pub=@]
+  ^-  [eph-pub=@ ciphertext=@ ct-len=@ud]
+  =/  eph-sec=@  (shax (cat 3 plaintext recipient-pub))
+  =/  eph-pub=@  (scalarmult-base:ed:crypto eph-sec)
+  =/  shared=@  (shar:ed:crypto recipient-pub eph-sec)
+  =/  keystream=@  (stream-bytes shared pt-len)
+  =/  ct=@  (mix plaintext keystream)
+  [eph-pub ct pt-len]
+::
+++  ecash-decrypt
+  |=  [ciphertext=@ ct-len=@ud eph-pub=@ our-sec=@]
+  ^-  @
+  =/  shared=@  (shar:ed:crypto eph-pub our-sec)
+  =/  keystream=@  (stream-bytes shared ct-len)
+  (mix ciphertext keystream)
+::
+::  Generate a keystream of n bytes from a seed using SHA-256 counter mode
+::
+++  stream-bytes
+  |=  [seed=@ n=@ud]
+  ^-  @
+  =/  blocks=@ud  (add (div n 32) ?:((gth (mod n 32) 0) 1 0))
+  =/  out=@  0
+  =/  i=@ud  0
+  |-
+  ?:  =(i blocks)
+    (end [3 n] out)
+  =/  block=@  (shay 36 (cat 3 seed i))
+  $(i +(i), out (add (lsh [3 (mul 32 i)] block) out))
+::
 ++  wallet-balance
   |=  w=(map @t (list cashu-proof))
   ^-  @ud
@@ -157,6 +194,38 @@
   =/  matches  (skim pairs |=([k=@t *] =(k field)))
   ?~  matches  ~
   `+.i.matches
+::
+++  parse-ud
+  |=  txt=@t
+  ^-  (unit @ud)
+  =/  chars  (trip txt)
+  ?:  =(~ chars)  ~
+  ?.  (levy chars |=(c=@ &((gte c '0') (lte c '9'))))
+    ~
+  `(roll chars |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
+::
+++  parse-token-list
+  |=  arr=(list json)
+  ^-  (list cashu-proof)
+  %+  murn  arr
+  |=  t=json
+  ^-  (unit cashu-proof)
+  ?.  ?=([%o *] t)  ~
+  =/  a  (~(get by p.t) 'amount')
+  =/  i  (~(get by p.t) 'id')
+  =/  s  (~(get by p.t) 'secret')
+  =/  c  (~(get by p.t) 'C')
+  ?~  a  ~
+  ?~  i  ~
+  ?~  s  ~
+  ?~  c  ~
+  =/  amt=@ud
+    ?.  ?=([%n *] u.a)  0
+    (roll (trip p.u.a) |=([ch=@ ac=@ud] (add (mul ac 10) (sub ch '0'))))
+  ?.  ?=([%s *] u.i)  ~
+  ?.  ?=([%s *] u.s)  ~
+  ?.  ?=([%s *] u.c)  ~
+  `[amt p.u.i p.u.s p.u.c]
 ::
 ::  Select proofs from wallet totaling >= required but <= 110% of required.
 ::  Returns (unit [selected remaining]) where selected are the proofs to spend
@@ -173,45 +242,58 @@
     %+  turn  ~(tap by w)
     |=  [m=@t ps=(list cashu-proof)]
     (turn ps |=(p=cashu-proof [m p]))
-  ::  sort by amount descending for greedy selection
+  ::  sort by amount ascending for subset search
   =/  sorted=(list [mint=@t proof=cashu-proof])
     %+  sort  all
     |=  [a=[mint=@t proof=cashu-proof] b=[mint=@t proof=cashu-proof]]
-    (gth amount.proof.a amount.proof.b)
-  ::  greedy: take largest proofs until we meet the requirement
-  =/  selected=(list [mint=@t proof=cashu-proof])  ~
-  =/  total=@ud  0
-  =/  rest=(list [mint=@t proof=cashu-proof])  sorted
-  |-
-  ?:  (gte total required)
-    ::  we have enough — check 110% cap
-    ?:  (gth total max)  ~
-    ::  build results
-    =/  sel=(list cashu-proof)  (turn selected |=([m=@t p=cashu-proof] p))
-    ::  rebuild wallet minus selected
-    =/  new-wallet=(map @t (list cashu-proof))  w
-    |-  ^-  (unit [selected=(list cashu-proof) remaining=(map @t (list cashu-proof))])
-    ?~  selected
-      `[sel new-wallet]
-    =/  m=@t  mint.i.selected
-    =/  p=cashu-proof  proof.i.selected
-    =/  existing=(list cashu-proof)  (~(gut by new-wallet) m ~)
-    =/  updated=(list cashu-proof)
-      %+  skip  existing
-      |=  e=cashu-proof
-      &(=(secret.e secret.p) =(amount.e amount.p))
-    =.  new-wallet
-      ?:  =(~ updated)
-        (~(del by new-wallet) m)
-      (~(put by new-wallet) m updated)
-    $(selected t.selected)
-  ?~  rest  ~
-  =/  candidate  i.rest
-  =/  new-total  (add total amount.proof.candidate)
-  ::  skip if adding this proof would push past 110% when we're already >= required
-  ?:  &((gte (add total amount.proof.candidate) required) (gth new-total max))
-    $(rest t.rest)
-  $(selected [candidate selected], total new-total, rest t.rest)
+    (lth amount.proof.a amount.proof.b)
+  ::  find best valid subset via recursive search with pruning
+  =/  found=(unit (list [mint=@t proof=cashu-proof]))
+    =|  best=(unit (list [mint=@t proof=cashu-proof]))
+    =|  current=(list [mint=@t proof=cashu-proof])
+    =/  current-total=@ud  0
+    |-  ^-  (unit (list [mint=@t proof=cashu-proof]))
+    =/  in-range=?  &((gte current-total required) (lte current-total max))
+    =/  better=?
+      ?:  in-range
+        ?|  ?=(~ best)
+            %+  lth  current-total
+            (roll (turn (need best) |=([m=@t p=cashu-proof] amount.p)) add)
+        ==
+      %.n
+    =?  best  better  `current
+    ?:  (gth current-total max)  best
+    ?~  sorted  best
+    =/  with
+      %=  $
+        sorted  t.sorted
+        current  [i.sorted current]
+        current-total  (add current-total amount.proof.i.sorted)
+      ==
+    %=  $
+      sorted  t.sorted
+      best  ?~(with best with)
+    ==
+  ?~  found  ~
+  ::  build results: extract proofs and rebuild wallet
+  =/  sel=(list cashu-proof)  (turn u.found |=([m=@t p=cashu-proof] p))
+  =/  new-wallet=(map @t (list cashu-proof))  w
+  =/  to-remove=(list [mint=@t proof=cashu-proof])  u.found
+  |-  ^-  (unit [selected=(list cashu-proof) remaining=(map @t (list cashu-proof))])
+  ?~  to-remove
+    `[sel new-wallet]
+  =/  m=@t  mint.i.to-remove
+  =/  p=cashu-proof  proof.i.to-remove
+  =/  existing=(list cashu-proof)  (~(gut by new-wallet) m ~)
+  =/  updated=(list cashu-proof)
+    %+  skip  existing
+    |=  e=cashu-proof
+    &(=(secret.e secret.p) =(amount.e amount.p))
+  =.  new-wallet
+    ?:  =(~ updated)
+      (~(del by new-wallet) m)
+    (~(put by new-wallet) m updated)
+  $(to-remove t.to-remove)
 --
 ^-  agent:gall
 =|  state-6
@@ -388,8 +470,11 @@
       ?~  ship-val
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  who  (slav %p u.ship-val)
-      :_  this(banned (~(put in banned) who))
+      =/  who  (slaw %p u.ship-val)
+      ?~  who
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      :_  this(banned (~(put in banned) u.who))
       (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       ::
       ::  POST /vitriol/admin/unban — unban form action
@@ -407,8 +492,11 @@
       ?~  ship-val
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  who  (slav %p u.ship-val)
-      :_  this(banned (~(del in banned) who))
+      =/  who  (slaw %p u.ship-val)
+      ?~  who
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      :_  this(banned (~(del in banned) u.who))
       (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       ::
       ::  POST /vitriol/admin/toggle-payment — toggle require-payment
@@ -435,9 +523,11 @@
       ?:  =('' u.price-val)
         :_  this(sats-per-pr ~)
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  price=@ud
-        (roll (trip u.price-val) |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
-      :_  this(sats-per-pr ?:(=(0 price) ~ `price))
+      =/  price  (parse-ud u.price-val)
+      ?~  price
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      :_  this(sats-per-pr ?:(=(0 u.price) ~ price))
       (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       ::
       ::  POST /vitriol/admin/set-mint — set mint URL
@@ -479,9 +569,11 @@
       ?~  amt-val
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  amount=@ud
-        (roll (trip u.amt-val) |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
-      ?:  =(0 amount)
+      =/  amount  (parse-ud u.amt-val)
+      ?~  amount
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ?:  =(0 u.amount)
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       =/  mint-clean=tape  (clean-mint-url:ca u.mint)
@@ -498,7 +590,7 @@
         :*  mint-cord
             ''
             ''
-            amount
+            u.amount
             keyset-id
             *@da
             ?:(=('' keyset-id) %fetch-keys %quote)
@@ -512,7 +604,7 @@
         :~  [%pass /iris/mint-keys/[nonce] %arvo %i %request [%'GET' keys-url ~ ~] *outbound-config:iris]
         ==
       ::  have keyset, go straight to quote
-      =/  quote-body=@t  (en:json:html (build-mint-quote-request:ca amount 'sat'))
+      =/  quote-body=@t  (en:json:html (build-mint-quote-request:ca u.amount 'sat'))
       =/  quote-octs=octs  [(met 3 quote-body) quote-body]
       =/  quote-url=@t  (crip (weld mint-clean "/v1/mint/quote/bolt11"))
       :_  this
@@ -615,7 +707,8 @@
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
       =/  selected=(list cashu-proof)  selected.u.selection
       =/  token-total=@ud  (roll selected |=([p=cashu-proof a=@ud] (add a amount.p)))
-      =/  tokens-json=json
+      =/  tokens-cord=@t
+        %-  en:json:html
         :-  %a
         %+  turn  selected
         |=  p=cashu-proof
@@ -625,13 +718,36 @@
             ['secret' s+secret.p]
             ['C' s+c.p]
         ==
+      ::  encrypt tokens if maintainer ecash pubkey provided
+      =/  recipient-pub=(unit @)
+        =/  rp  (~(get by fields) 'ecash_pubkey')
+        ?~  rp  ~
+        ?.  ?=([%s *] u.rp)  ~
+        ?:  =('' p.u.rp)  ~
+        `(from-hex p.u.rp)
       =/  result=json
+        ?~  recipient-pub
+          ::  no pubkey — send tokens in plaintext (local use only)
+          %-  pairs:enjs:format
+          :~  ['signature' s+(to-hex 128 sig)]
+              ['signer_id' s+(scot %p our.bowl)]
+              ['pass' s+(to-hex 130 pass.u.deed)]
+              ['ecash_tokens' s+tokens-cord]
+              ['ecash_amount' (numb:enjs:format token-total)]
+              ['ecash_encrypted' b+%.n]
+          ==
+        ::  encrypt tokens with maintainer's pubkey
+        =/  pt-len=@ud  (met 3 tokens-cord)
+        =/  [eph-pub=@ ct=@ ct-len=@ud]
+          (ecash-encrypt tokens-cord pt-len u.recipient-pub)
         %-  pairs:enjs:format
         :~  ['signature' s+(to-hex 128 sig)]
             ['signer_id' s+(scot %p our.bowl)]
             ['pass' s+(to-hex 130 pass.u.deed)]
-            ['ecash_tokens' tokens-json]
+            ['ecash_ciphertext' s+(to-hex (mul 2 ct-len) ct)]
+            ['ecash_ephemeral_pubkey' s+(to-hex 64 eph-pub)]
             ['ecash_amount' (numb:enjs:format token-total)]
+            ['ecash_encrypted' b+%.y]
         ==
       :_  this(wallet remaining.u.selection)
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
@@ -648,7 +764,17 @@
       =/  signer-cord  (so:dejs:format (~(got by fields) 'signer'))
       =/  sig-hex      (so:dejs:format (~(got by fields) 'signature'))
       =/  payload       (so:dejs:format (~(got by fields) 'payload'))
-      =/  who  (slav %p signer-cord)
+      =/  who-unit  (slaw %p signer-cord)
+      ?~  who-unit
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.n]
+              ['signer' s+signer-cord]
+              ['error' s+'invalid ship name']
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      =/  who  u.who-unit
       ?:  (~(has in banned) who)
         =/  result=json
           %-  pairs:enjs:format
@@ -691,29 +817,33 @@
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::  signature valid — parse ecash tokens if present
+      ::  tokens may be encrypted (ciphertext + ephemeral pubkey) or plaintext
       =/  incoming-tokens=(list cashu-proof)
+        ::  try encrypted path first
+        =/  ct-hex  (~(get by fields) 'ecash_ciphertext')
+        =/  eph-hex  (~(get by fields) 'ecash_ephemeral_pubkey')
+        ?:  &(?=(^ ct-hex) ?=(^ eph-hex) ?=([%s *] u.ct-hex) ?=([%s *] u.eph-hex))
+          ::  decrypt using our ecash secret key
+          ?~  ecash-key  ~
+          =/  ct=@  (from-hex p.u.ct-hex)
+          =/  ct-len=@ud  (div (lent (trip p.u.ct-hex)) 2)
+          =/  eph-pub=@  (from-hex p.u.eph-hex)
+          =/  plaintext=@  (ecash-decrypt ct ct-len eph-pub sec.u.ecash-key)
+          =/  tok-json  (de:json:html plaintext)
+          ?~  tok-json  ~
+          ?.  ?=([%a *] u.tok-json)  ~
+          (parse-token-list p.u.tok-json)
+        ::  try plaintext path
         =/  tok  (~(get by fields) 'ecash_tokens')
         ?~  tok  ~
+        ::  could be a JSON string (serialized) or a JSON array
+        ?:  ?=([%s *] u.tok)
+          =/  tok-json  (de:json:html p.u.tok)
+          ?~  tok-json  ~
+          ?.  ?=([%a *] u.tok-json)  ~
+          (parse-token-list p.u.tok-json)
         ?.  ?=([%a *] u.tok)  ~
-        %+  murn  p.u.tok
-        |=  t=json
-        ^-  (unit cashu-proof)
-        ?.  ?=([%o *] t)  ~
-        =/  a  (~(get by p.t) 'amount')
-        =/  i  (~(get by p.t) 'id')
-        =/  s  (~(get by p.t) 'secret')
-        =/  c  (~(get by p.t) 'C')
-        ?~  a  ~
-        ?~  i  ~
-        ?~  s  ~
-        ?~  c  ~
-        =/  amt=@ud
-          ?.  ?=([%n *] u.a)  0
-          (roll (trip p.u.a) |=([ch=@ ac=@ud] (add (mul ac 10) (sub ch '0'))))
-        ?.  ?=([%s *] u.i)  ~
-        ?.  ?=([%s *] u.s)  ~
-        ?.  ?=([%s *] u.c)  ~
-        `[amt p.u.i p.u.s p.u.c]
+        (parse-token-list p.u.tok)
       =/  token-total=@ud
         (roll incoming-tokens |=([p=cashu-proof a=@ud] (add a amount.p)))
       =/  mint-url-cord=@t
@@ -819,9 +949,6 @@
             ['signer' s+(scot %p signer.u.pv)]
             ['error' s+error.u.pv]
         ==
-      ::  clean up completed verifications
-      =?  pending-verifies  !=(result.u.pv %pending)
-        (~(del by pending-verifies) vid)
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
@@ -1058,7 +1185,8 @@
       =/  ks  (~(get by p.jon) 'keysets')
       ?~  ks  (~(get by p.jon) 'keys')
       ?.  ?=([%a *] u.ks)  (~(get by p.jon) 'keys')
-      =/  first  (snag 0 p.u.ks)
+      ?~  p.u.ks  (~(get by p.jon) 'keys')
+      =/  first  i.p.u.ks
       ?.  ?=([%o *] first)  (~(get by p.jon) 'keys')
       (~(get by p.first) 'keys')
     ?~  keys-val
@@ -1289,7 +1417,8 @@
       =/  ks  (~(get by p.jon) 'keysets')
       ?~  ks  (~(get by p.jon) 'keys')
       ?.  ?=([%a *] u.ks)  (~(get by p.jon) 'keys')
-      =/  first  (snag 0 p.u.ks)
+      ?~  p.u.ks  (~(get by p.jon) 'keys')
+      =/  first  i.p.u.ks
       ?.  ?=([%o *] first)  (~(get by p.jon) 'keys')
       (~(get by p.first) 'keys')
     ?~  keys-val

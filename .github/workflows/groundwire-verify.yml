@@ -81,20 +81,40 @@ jobs:
 
             echo "Commit ${SHORT}: signed by ${SIGNER}, verifying against on-chain key..."
 
+            # --- Extract ecash fields if present ---
+            ECASH_CIPHERTEXT=$(echo "$SIG_BLOCK" | grep '^ecash-ciphertext:' | cut -d: -f2)
+            ECASH_EPH_PUBKEY=$(echo "$SIG_BLOCK" | grep '^ecash-ephemeral-pubkey:' | cut -d: -f2)
+            ECASH_TOKENS=$(echo "$SIG_BLOCK" | grep '^ecash-tokens:' | cut -d: -f2-)
+            ECASH_AMOUNT=$(echo "$SIG_BLOCK" | grep '^ecash-amount:' | cut -d: -f2)
+            MINT_URL=$(echo "$SIG_BLOCK" | grep '^mint:' | cut -d: -f2-)
+
             # --- Send to CI's Groundwire ship for full verification ---
             # The ship checks:
             #   1. Is the signer attested on-chain? (Jael deed lookup)
             #   2. Does the Ed25519 signature match the on-chain pass?
+            #   3. If ecash tokens present, NUT-03 swap to verify value
+            VERIFY_ARGS=(--arg signer "$SIGNER" --arg signature "$SIGNATURE" --arg payload "$PAYLOAD")
+            VERIFY_EXPR='{signer: $signer, signature: $signature, payload: $payload'
+
+            if [ -n "$ECASH_CIPHERTEXT" ]; then
+              VERIFY_ARGS+=(--arg ecash_ciphertext "$ECASH_CIPHERTEXT" --arg ecash_ephemeral_pubkey "$ECASH_EPH_PUBKEY")
+              VERIFY_EXPR+=', ecash_ciphertext: $ecash_ciphertext, ecash_ephemeral_pubkey: $ecash_ephemeral_pubkey'
+            elif [ -n "$ECASH_TOKENS" ]; then
+              VERIFY_ARGS+=(--argjson ecash_tokens "$ECASH_TOKENS")
+              VERIFY_EXPR+=', ecash_tokens: $ecash_tokens'
+            fi
+
+            [ -n "$ECASH_AMOUNT" ] && { VERIFY_ARGS+=(--argjson ecash_amount "$ECASH_AMOUNT"); VERIFY_EXPR+=', ecash_amount: $ecash_amount'; }
+            [ -n "$MINT_URL" ] && { VERIFY_ARGS+=(--arg mint "$MINT_URL"); VERIFY_EXPR+=', mint: $mint'; }
+
+            VERIFY_EXPR+='}'
+
             RESPONSE=$(curl -s -f \
               -X POST \
               -H "Content-Type: application/json" \
               -H "Cookie: ${GROUNDWIRE_AUTH}" \
               "${GROUNDWIRE_ENDPOINT}/vitriol/verify-commit" \
-              -d "$(jq -n \
-                --arg signer "$SIGNER" \
-                --arg signature "$SIGNATURE" \
-                --arg payload "$PAYLOAD" \
-                '{signer: $signer, signature: $signature, payload: $payload}')") || {
+              -d "$(jq -n "${VERIFY_ARGS[@]}" "$VERIFY_EXPR")") || {
               echo "::error::Commit ${SHORT}: failed to reach CI Groundwire ship"
               RESULTS="${RESULTS}UNREACHABLE ${SHORT}\n"
               VERIFIED="false"
