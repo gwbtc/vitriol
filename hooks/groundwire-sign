@@ -110,18 +110,21 @@ fi
 
 # --- Send to signing service --------------------------------------------------
 
+PAYLOAD_ARGS=(--arg content "$COMMIT_CONTENT" --arg key_id "$KEY_ID")
+PAYLOAD_EXPR='{content: $content, key_id: $key_id'
+
 if [ -n "$SATS_REQUIRED" ] && [ "$SATS_REQUIRED" != "0" ]; then
-  PAYLOAD=$(jq -n \
-    --arg content "$COMMIT_CONTENT" \
-    --arg key_id "$KEY_ID" \
-    --argjson sats "$SATS_REQUIRED" \
-    '{content: $content, key_id: $key_id, sats_required: $sats}')
-else
-  PAYLOAD=$(jq -n \
-    --arg content "$COMMIT_CONTENT" \
-    --arg key_id "$KEY_ID" \
-    '{content: $content, key_id: $key_id}')
+  PAYLOAD_ARGS+=(--argjson sats "$SATS_REQUIRED")
+  PAYLOAD_EXPR+=', sats_required: $sats'
 fi
+
+if [ -n "$ECASH_PUBKEY" ]; then
+  PAYLOAD_ARGS+=(--arg ecash_pubkey "$ECASH_PUBKEY")
+  PAYLOAD_EXPR+=', ecash_pubkey: $ecash_pubkey'
+fi
+
+PAYLOAD_EXPR+='}'
+PAYLOAD=$(jq -n "${PAYLOAD_ARGS[@]}" "$PAYLOAD_EXPR")
 
 RESPONSE=$(curl -s -f \
   -X POST \
@@ -143,8 +146,11 @@ fi
 SIGNATURE=$(echo "$RESPONSE" | jq -r '.signature // empty')
 SIGNER_ID=$(echo "$RESPONSE" | jq -r '.signer_id // empty')
 PASS=$(echo "$RESPONSE" | jq -r '.pass // empty')
-ECASH_TOKENS=$(echo "$RESPONSE" | jq -r '.ecash_tokens // empty')
 ECASH_AMOUNT=$(echo "$RESPONSE" | jq -r '.ecash_amount // empty')
+ECASH_ENCRYPTED=$(echo "$RESPONSE" | jq -r '.ecash_encrypted // empty')
+ECASH_CIPHERTEXT=$(echo "$RESPONSE" | jq -r '.ecash_ciphertext // empty')
+ECASH_EPH_PUBKEY=$(echo "$RESPONSE" | jq -r '.ecash_ephemeral_pubkey // empty')
+ECASH_TOKENS=$(echo "$RESPONSE" | jq -r '.ecash_tokens // empty')
 
 if [ -z "$SIGNATURE" ]; then
   echo "groundwire-sign: no signature in response" >&2
@@ -166,9 +172,14 @@ fi
   echo "pass:${PASS}"
   echo "sig:${SIGNATURE}"
   [ -n "$ECASH_PUBKEY" ] && echo "ecash-pubkey:${ECASH_PUBKEY}"
-  if [ -n "$ECASH_TOKENS" ] && [ "$ECASH_TOKENS" != "null" ]; then
+  if [ -n "$ECASH_AMOUNT" ] && [ "$ECASH_AMOUNT" != "0" ]; then
     echo "ecash-amount:${ECASH_AMOUNT}"
-    echo "ecash-tokens:$(echo "$ECASH_TOKENS" | jq -c '.')"
+    if [ "$ECASH_ENCRYPTED" = "true" ]; then
+      echo "ecash-ciphertext:${ECASH_CIPHERTEXT}"
+      echo "ecash-ephemeral-pubkey:${ECASH_EPH_PUBKEY}"
+    elif [ -n "$ECASH_TOKENS" ] && [ "$ECASH_TOKENS" != "null" ]; then
+      echo "ecash-tokens:${ECASH_TOKENS}"
+    fi
   fi
   echo "-----END GROUNDWIRE SIGNATURE-----"
 }

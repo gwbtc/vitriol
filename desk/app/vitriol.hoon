@@ -144,6 +144,43 @@
   =/  pub=@  (scalarmult-base:ed:crypto sec)
   [sec pub]
 ::
+::
+::  Encrypt data with Curve25519 DH.  Generates an ephemeral keypair,
+::  computes a shared secret via shar:ed:crypto, derives a keystream
+::  from SHA-256 in counter mode, and XORs the plaintext.
+::  Returns [ephemeral-pub ciphertext].
+::
+++  ecash-encrypt
+  |=  [plaintext=@ pt-len=@ud recipient-pub=@]
+  ^-  [eph-pub=@ ciphertext=@ ct-len=@ud]
+  =/  eph-sec=@  (shax (cat 3 plaintext recipient-pub))
+  =/  eph-pub=@  (scalarmult-base:ed:crypto eph-sec)
+  =/  shared=@  (shar:ed:crypto recipient-pub eph-sec)
+  =/  keystream=@  (stream-bytes shared pt-len)
+  =/  ct=@  (mix plaintext keystream)
+  [eph-pub ct pt-len]
+::
+++  ecash-decrypt
+  |=  [ciphertext=@ ct-len=@ud eph-pub=@ our-sec=@]
+  ^-  @
+  =/  shared=@  (shar:ed:crypto eph-pub our-sec)
+  =/  keystream=@  (stream-bytes shared ct-len)
+  (mix ciphertext keystream)
+::
+::  Generate a keystream of n bytes from a seed using SHA-256 counter mode
+::
+++  stream-bytes
+  |=  [seed=@ n=@ud]
+  ^-  @
+  =/  blocks=@ud  (add (div n 32) ?:((gth (mod n 32) 0) 1 0))
+  =/  out=@  0
+  =/  i=@ud  0
+  |-
+  ?:  =(i blocks)
+    (end [3 n] out)
+  =/  block=@  (shay 36 (cat 3 seed i))
+  $(i +(i), out (add (lsh [3 (mul 32 i)] block) out))
+::
 ++  wallet-balance
   |=  w=(map @t (list cashu-proof))
   ^-  @ud
@@ -166,6 +203,29 @@
   ?.  (levy chars |=(c=@ &((gte c '0') (lte c '9'))))
     ~
   `(roll chars |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
+::
+++  parse-token-list
+  |=  arr=(list json)
+  ^-  (list cashu-proof)
+  %+  murn  arr
+  |=  t=json
+  ^-  (unit cashu-proof)
+  ?.  ?=([%o *] t)  ~
+  =/  a  (~(get by p.t) 'amount')
+  =/  i  (~(get by p.t) 'id')
+  =/  s  (~(get by p.t) 'secret')
+  =/  c  (~(get by p.t) 'C')
+  ?~  a  ~
+  ?~  i  ~
+  ?~  s  ~
+  ?~  c  ~
+  =/  amt=@ud
+    ?.  ?=([%n *] u.a)  0
+    (roll (trip p.u.a) |=([ch=@ ac=@ud] (add (mul ac 10) (sub ch '0'))))
+  ?.  ?=([%s *] u.i)  ~
+  ?.  ?=([%s *] u.s)  ~
+  ?.  ?=([%s *] u.c)  ~
+  `[amt p.u.i p.u.s p.u.c]
 ::
 ::  Select proofs from wallet totaling >= required but <= 110% of required.
 ::  Returns (unit [selected remaining]) where selected are the proofs to spend
@@ -647,7 +707,8 @@
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
       =/  selected=(list cashu-proof)  selected.u.selection
       =/  token-total=@ud  (roll selected |=([p=cashu-proof a=@ud] (add a amount.p)))
-      =/  tokens-json=json
+      =/  tokens-cord=@t
+        %-  en:json:html
         :-  %a
         %+  turn  selected
         |=  p=cashu-proof
@@ -657,13 +718,36 @@
             ['secret' s+secret.p]
             ['C' s+c.p]
         ==
+      ::  encrypt tokens if maintainer ecash pubkey provided
+      =/  recipient-pub=(unit @)
+        =/  rp  (~(get by fields) 'ecash_pubkey')
+        ?~  rp  ~
+        ?.  ?=([%s *] u.rp)  ~
+        ?:  =('' p.u.rp)  ~
+        `(from-hex p.u.rp)
       =/  result=json
+        ?~  recipient-pub
+          ::  no pubkey — send tokens in plaintext (local use only)
+          %-  pairs:enjs:format
+          :~  ['signature' s+(to-hex 128 sig)]
+              ['signer_id' s+(scot %p our.bowl)]
+              ['pass' s+(to-hex 130 pass.u.deed)]
+              ['ecash_tokens' s+tokens-cord]
+              ['ecash_amount' (numb:enjs:format token-total)]
+              ['ecash_encrypted' b+%.n]
+          ==
+        ::  encrypt tokens with maintainer's pubkey
+        =/  pt-len=@ud  (met 3 tokens-cord)
+        =/  [eph-pub=@ ct=@ ct-len=@ud]
+          (ecash-encrypt tokens-cord pt-len u.recipient-pub)
         %-  pairs:enjs:format
         :~  ['signature' s+(to-hex 128 sig)]
             ['signer_id' s+(scot %p our.bowl)]
             ['pass' s+(to-hex 130 pass.u.deed)]
-            ['ecash_tokens' tokens-json]
+            ['ecash_ciphertext' s+(to-hex (mul 2 ct-len) ct)]
+            ['ecash_ephemeral_pubkey' s+(to-hex 64 eph-pub)]
             ['ecash_amount' (numb:enjs:format token-total)]
+            ['ecash_encrypted' b+%.y]
         ==
       :_  this(wallet remaining.u.selection)
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
@@ -733,29 +817,33 @@
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::  signature valid — parse ecash tokens if present
+      ::  tokens may be encrypted (ciphertext + ephemeral pubkey) or plaintext
       =/  incoming-tokens=(list cashu-proof)
+        ::  try encrypted path first
+        =/  ct-hex  (~(get by fields) 'ecash_ciphertext')
+        =/  eph-hex  (~(get by fields) 'ecash_ephemeral_pubkey')
+        ?:  &(?=(^ ct-hex) ?=(^ eph-hex) ?=([%s *] u.ct-hex) ?=([%s *] u.eph-hex))
+          ::  decrypt using our ecash secret key
+          ?~  ecash-key  ~
+          =/  ct=@  (from-hex p.u.ct-hex)
+          =/  ct-len=@ud  (div (lent (trip p.u.ct-hex)) 2)
+          =/  eph-pub=@  (from-hex p.u.eph-hex)
+          =/  plaintext=@  (ecash-decrypt ct ct-len eph-pub sec.u.ecash-key)
+          =/  tok-json  (de:json:html plaintext)
+          ?~  tok-json  ~
+          ?.  ?=([%a *] u.tok-json)  ~
+          (parse-token-list p.u.tok-json)
+        ::  try plaintext path
         =/  tok  (~(get by fields) 'ecash_tokens')
         ?~  tok  ~
+        ::  could be a JSON string (serialized) or a JSON array
+        ?:  ?=([%s *] u.tok)
+          =/  tok-json  (de:json:html p.u.tok)
+          ?~  tok-json  ~
+          ?.  ?=([%a *] u.tok-json)  ~
+          (parse-token-list p.u.tok-json)
         ?.  ?=([%a *] u.tok)  ~
-        %+  murn  p.u.tok
-        |=  t=json
-        ^-  (unit cashu-proof)
-        ?.  ?=([%o *] t)  ~
-        =/  a  (~(get by p.t) 'amount')
-        =/  i  (~(get by p.t) 'id')
-        =/  s  (~(get by p.t) 'secret')
-        =/  c  (~(get by p.t) 'C')
-        ?~  a  ~
-        ?~  i  ~
-        ?~  s  ~
-        ?~  c  ~
-        =/  amt=@ud
-          ?.  ?=([%n *] u.a)  0
-          (roll (trip p.u.a) |=([ch=@ ac=@ud] (add (mul ac 10) (sub ch '0'))))
-        ?.  ?=([%s *] u.i)  ~
-        ?.  ?=([%s *] u.s)  ~
-        ?.  ?=([%s *] u.c)  ~
-        `[amt p.u.i p.u.s p.u.c]
+        (parse-token-list p.u.tok)
       =/  token-total=@ud
         (roll incoming-tokens |=([p=cashu-proof a=@ud] (add a amount.p)))
       =/  mint-url-cord=@t
