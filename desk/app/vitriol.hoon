@@ -158,6 +158,15 @@
   ?~  matches  ~
   `+.i.matches
 ::
+++  parse-ud
+  |=  txt=@t
+  ^-  (unit @ud)
+  =/  chars  (trip txt)
+  ?:  =(~ chars)  ~
+  ?.  (levy chars |=(c=@ &((gte c '0') (lte c '9'))))
+    ~
+  `(roll chars |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
+::
 ::  Select proofs from wallet totaling >= required but <= 110% of required.
 ::  Returns (unit [selected remaining]) where selected are the proofs to spend
 ::  and remaining is the updated wallet.
@@ -173,45 +182,58 @@
     %+  turn  ~(tap by w)
     |=  [m=@t ps=(list cashu-proof)]
     (turn ps |=(p=cashu-proof [m p]))
-  ::  sort by amount descending for greedy selection
+  ::  sort by amount ascending for subset search
   =/  sorted=(list [mint=@t proof=cashu-proof])
     %+  sort  all
     |=  [a=[mint=@t proof=cashu-proof] b=[mint=@t proof=cashu-proof]]
-    (gth amount.proof.a amount.proof.b)
-  ::  greedy: take largest proofs until we meet the requirement
-  =/  selected=(list [mint=@t proof=cashu-proof])  ~
-  =/  total=@ud  0
-  =/  rest=(list [mint=@t proof=cashu-proof])  sorted
-  |-
-  ?:  (gte total required)
-    ::  we have enough — check 110% cap
-    ?:  (gth total max)  ~
-    ::  build results
-    =/  sel=(list cashu-proof)  (turn selected |=([m=@t p=cashu-proof] p))
-    ::  rebuild wallet minus selected
-    =/  new-wallet=(map @t (list cashu-proof))  w
-    |-  ^-  (unit [selected=(list cashu-proof) remaining=(map @t (list cashu-proof))])
-    ?~  selected
-      `[sel new-wallet]
-    =/  m=@t  mint.i.selected
-    =/  p=cashu-proof  proof.i.selected
-    =/  existing=(list cashu-proof)  (~(gut by new-wallet) m ~)
-    =/  updated=(list cashu-proof)
-      %+  skip  existing
-      |=  e=cashu-proof
-      &(=(secret.e secret.p) =(amount.e amount.p))
-    =.  new-wallet
-      ?:  =(~ updated)
-        (~(del by new-wallet) m)
-      (~(put by new-wallet) m updated)
-    $(selected t.selected)
-  ?~  rest  ~
-  =/  candidate  i.rest
-  =/  new-total  (add total amount.proof.candidate)
-  ::  skip if adding this proof would push past 110% when we're already >= required
-  ?:  &((gte (add total amount.proof.candidate) required) (gth new-total max))
-    $(rest t.rest)
-  $(selected [candidate selected], total new-total, rest t.rest)
+    (lth amount.proof.a amount.proof.b)
+  ::  find best valid subset via recursive search with pruning
+  =/  found=(unit (list [mint=@t proof=cashu-proof]))
+    =|  best=(unit (list [mint=@t proof=cashu-proof]))
+    =|  current=(list [mint=@t proof=cashu-proof])
+    =/  current-total=@ud  0
+    |-  ^-  (unit (list [mint=@t proof=cashu-proof]))
+    =/  in-range=?  &((gte current-total required) (lte current-total max))
+    =/  better=?
+      ?:  in-range
+        ?|  ?=(~ best)
+            %+  lth  current-total
+            (roll (turn (need best) |=([m=@t p=cashu-proof] amount.p)) add)
+        ==
+      %.n
+    =?  best  better  `current
+    ?:  (gth current-total max)  best
+    ?~  sorted  best
+    =/  with
+      %=  $
+        sorted  t.sorted
+        current  [i.sorted current]
+        current-total  (add current-total amount.proof.i.sorted)
+      ==
+    %=  $
+      sorted  t.sorted
+      best  ?~(with best with)
+    ==
+  ?~  found  ~
+  ::  build results: extract proofs and rebuild wallet
+  =/  sel=(list cashu-proof)  (turn u.found |=([m=@t p=cashu-proof] p))
+  =/  new-wallet=(map @t (list cashu-proof))  w
+  =/  to-remove=(list [mint=@t proof=cashu-proof])  u.found
+  |-  ^-  (unit [selected=(list cashu-proof) remaining=(map @t (list cashu-proof))])
+  ?~  to-remove
+    `[sel new-wallet]
+  =/  m=@t  mint.i.to-remove
+  =/  p=cashu-proof  proof.i.to-remove
+  =/  existing=(list cashu-proof)  (~(gut by new-wallet) m ~)
+  =/  updated=(list cashu-proof)
+    %+  skip  existing
+    |=  e=cashu-proof
+    &(=(secret.e secret.p) =(amount.e amount.p))
+  =.  new-wallet
+    ?:  =(~ updated)
+      (~(del by new-wallet) m)
+    (~(put by new-wallet) m updated)
+  $(to-remove t.to-remove)
 --
 ^-  agent:gall
 =|  state-6
@@ -388,8 +410,11 @@
       ?~  ship-val
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  who  (slav %p u.ship-val)
-      :_  this(banned (~(put in banned) who))
+      =/  who  (slaw %p u.ship-val)
+      ?~  who
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      :_  this(banned (~(put in banned) u.who))
       (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       ::
       ::  POST /vitriol/admin/unban — unban form action
@@ -407,8 +432,11 @@
       ?~  ship-val
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  who  (slav %p u.ship-val)
-      :_  this(banned (~(del in banned) who))
+      =/  who  (slaw %p u.ship-val)
+      ?~  who
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      :_  this(banned (~(del in banned) u.who))
       (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       ::
       ::  POST /vitriol/admin/toggle-payment — toggle require-payment
@@ -435,9 +463,11 @@
       ?:  =('' u.price-val)
         :_  this(sats-per-pr ~)
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  price=@ud
-        (roll (trip u.price-val) |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
-      :_  this(sats-per-pr ?:(=(0 price) ~ `price))
+      =/  price  (parse-ud u.price-val)
+      ?~  price
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      :_  this(sats-per-pr ?:(=(0 u.price) ~ price))
       (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       ::
       ::  POST /vitriol/admin/set-mint — set mint URL
@@ -479,9 +509,11 @@
       ?~  amt-val
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  amount=@ud
-        (roll (trip u.amt-val) |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
-      ?:  =(0 amount)
+      =/  amount  (parse-ud u.amt-val)
+      ?~  amount
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ?:  =(0 u.amount)
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       =/  mint-clean=tape  (clean-mint-url:ca u.mint)
@@ -498,7 +530,7 @@
         :*  mint-cord
             ''
             ''
-            amount
+            u.amount
             keyset-id
             *@da
             ?:(=('' keyset-id) %fetch-keys %quote)
@@ -512,7 +544,7 @@
         :~  [%pass /iris/mint-keys/[nonce] %arvo %i %request [%'GET' keys-url ~ ~] *outbound-config:iris]
         ==
       ::  have keyset, go straight to quote
-      =/  quote-body=@t  (en:json:html (build-mint-quote-request:ca amount 'sat'))
+      =/  quote-body=@t  (en:json:html (build-mint-quote-request:ca u.amount 'sat'))
       =/  quote-octs=octs  [(met 3 quote-body) quote-body]
       =/  quote-url=@t  (crip (weld mint-clean "/v1/mint/quote/bolt11"))
       :_  this
@@ -648,7 +680,17 @@
       =/  signer-cord  (so:dejs:format (~(got by fields) 'signer'))
       =/  sig-hex      (so:dejs:format (~(got by fields) 'signature'))
       =/  payload       (so:dejs:format (~(got by fields) 'payload'))
-      =/  who  (slav %p signer-cord)
+      =/  who-unit  (slaw %p signer-cord)
+      ?~  who-unit
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.n]
+              ['signer' s+signer-cord]
+              ['error' s+'invalid ship name']
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      =/  who  u.who-unit
       ?:  (~(has in banned) who)
         =/  result=json
           %-  pairs:enjs:format
@@ -819,9 +861,6 @@
             ['signer' s+(scot %p signer.u.pv)]
             ['error' s+error.u.pv]
         ==
-      ::  clean up completed verifications
-      =?  pending-verifies  !=(result.u.pv %pending)
-        (~(del by pending-verifies) vid)
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
@@ -1058,7 +1097,8 @@
       =/  ks  (~(get by p.jon) 'keysets')
       ?~  ks  (~(get by p.jon) 'keys')
       ?.  ?=([%a *] u.ks)  (~(get by p.jon) 'keys')
-      =/  first  (snag 0 p.u.ks)
+      ?~  p.u.ks  (~(get by p.jon) 'keys')
+      =/  first  i.p.u.ks
       ?.  ?=([%o *] first)  (~(get by p.jon) 'keys')
       (~(get by p.first) 'keys')
     ?~  keys-val
@@ -1289,7 +1329,8 @@
       =/  ks  (~(get by p.jon) 'keysets')
       ?~  ks  (~(get by p.jon) 'keys')
       ?.  ?=([%a *] u.ks)  (~(get by p.jon) 'keys')
-      =/  first  (snag 0 p.u.ks)
+      ?~  p.u.ks  (~(get by p.jon) 'keys')
+      =/  first  i.p.u.ks
       ?.  ?=([%o *] first)  (~(get by p.jon) 'keys')
       (~(get by p.first) 'keys')
     ?~  keys-val
