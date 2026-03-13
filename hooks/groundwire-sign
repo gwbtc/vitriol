@@ -150,6 +150,7 @@ ECASH_AMOUNT=$(echo "$RESPONSE" | jq -r '.ecash_amount // empty')
 ECASH_ENCRYPTED=$(echo "$RESPONSE" | jq -r '.ecash_encrypted // empty')
 ECASH_CIPHERTEXT=$(echo "$RESPONSE" | jq -r '.ecash_ciphertext // empty')
 ECASH_EPH_PUBKEY=$(echo "$RESPONSE" | jq -r '.ecash_ephemeral_pubkey // empty')
+ECASH_MAC=$(echo "$RESPONSE" | jq -r '.ecash_mac // empty')
 ECASH_TOKENS=$(echo "$RESPONSE" | jq -r '.ecash_tokens // empty')
 
 if [ -z "$SIGNATURE" ]; then
@@ -177,6 +178,7 @@ fi
     if [ "$ECASH_ENCRYPTED" = "true" ]; then
       echo "ecash-ciphertext:${ECASH_CIPHERTEXT}"
       echo "ecash-ephemeral-pubkey:${ECASH_EPH_PUBKEY}"
+      echo "ecash-mac:${ECASH_MAC}"
     elif [ -n "$ECASH_TOKENS" ] && [ "$ECASH_TOKENS" != "null" ]; then
       echo "ecash-tokens:${ECASH_TOKENS}"
     fi

@@ -130,6 +130,10 @@
           ;code: POST /vitriol/verify-commit
           ;span:  — verify a signature against on-chain key
         ==
+        ;p
+          ;code: GET /vitriol/verify-status/[id]
+          ;span:  — poll for async ecash verification result
+        ==
         ;h3: identity
         ;p
           ;code: GET /vitriol/pubkey
