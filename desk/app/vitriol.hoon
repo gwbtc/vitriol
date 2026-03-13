@@ -32,6 +32,8 @@
       state-4
       state-5
       state-6
+      state-7
+      state-8
   ==
 +$  state-0
   $:  %0
@@ -79,6 +81,33 @@
       mint-keysets=(map @t (map @ud @t))
       pending-mints=(map @t pending-mint-quote)
       pending-verifies=(map @t pending-verify)
+  ==
++$  state-7
+  $:  %7
+      ecash-key=(unit [sec=@ pub=@])
+      banned=(set @p)
+      require-payment=?
+      sats-per-pr=(unit @ud)
+      mint=(unit @t)
+      wallet=(map @t (list cashu-proof))
+      mint-keysets=(map @t (map @ud @t))
+      pending-mints=(map @t pending-mint-quote)
+      pending-verifies=(map @t pending-verify)
+      in-flight=(map @t [proofs=(list cashu-proof) mint=@t expiry=@da])
+  ==
++$  state-8
+  $:  %8
+      ecash-key=(unit [sec=@ pub=@])
+      banned=(set @p)
+      require-payment=?
+      sats-per-pr=(unit @ud)
+      mint=(unit @t)
+      wallet=(map @t (list cashu-proof))
+      mint-keysets=(map @t (map @ud @t))
+      pending-mints=(map @t pending-mint-quote)
+      pending-verifies=(map @t pending-verify)
+      in-flight=(map @t [proofs=(list cashu-proof) mint=@t expiry=@da])
+      pending-melts=(map @t pending-melt)
   ==
 ::
 ++  ca  cashu
@@ -145,29 +174,39 @@
   [sec pub]
 ::
 ::
-::  Encrypt data with Curve25519 DH.  Generates an ephemeral keypair,
-::  computes a shared secret via shar:ed:crypto, derives a keystream
-::  from SHA-256 in counter mode, and XORs the plaintext.
-::  Returns [ephemeral-pub ciphertext].
+::  Authenticated encryption via Curve25519 ECDH.
+::
+::  Encrypt: ephemeral keypair → DH shared secret → derive enc_key
+::  and mac_key → XOR plaintext with counter-mode keystream →
+::  HMAC-SHA256 the ciphertext → return [eph-pub ciphertext mac].
+::
+::  Decrypt: DH shared secret → derive same keys → verify MAC →
+::  XOR to recover plaintext.  Returns ~ on MAC failure.
 ::
 ++  ecash-encrypt
-  |=  [plaintext=@ pt-len=@ud recipient-pub=@]
-  ^-  [eph-pub=@ ciphertext=@ ct-len=@ud]
-  =/  eph-sec=@  (shax (cat 3 plaintext recipient-pub))
+  |=  [plaintext=@ pt-len=@ud recipient-pub=@ eny=@]
+  ^-  [eph-pub=@ ciphertext=@ ct-len=@ud mac=@]
+  =/  eph-sec=@  (end [3 32] (shax eny))
   =/  eph-pub=@  (scalarmult-base:ed:crypto eph-sec)
   =/  shared=@  (shar:ed:crypto recipient-pub eph-sec)
-  =/  keystream=@  (stream-bytes shared pt-len)
+  =/  enc-key=@  (shay 36 (cat 3 shared 'encrypt'))
+  =/  mac-key=@  (shay 36 (cat 3 shared 'authenticate'))
+  =/  keystream=@  (stream-bytes enc-key pt-len)
   =/  ct=@  (mix plaintext keystream)
-  [eph-pub ct pt-len]
+  =/  mac=@  (shay (add 32 pt-len) (cat 3 mac-key ct))
+  [eph-pub ct pt-len mac]
 ::
 ++  ecash-decrypt
-  |=  [ciphertext=@ ct-len=@ud eph-pub=@ our-sec=@]
-  ^-  @
+  |=  [ciphertext=@ ct-len=@ud eph-pub=@ our-sec=@ mac=@]
+  ^-  (unit @)
   =/  shared=@  (shar:ed:crypto eph-pub our-sec)
-  =/  keystream=@  (stream-bytes shared ct-len)
-  (mix ciphertext keystream)
-::
-::  Generate a keystream of n bytes from a seed using SHA-256 counter mode
+  =/  enc-key=@  (shay 36 (cat 3 shared 'encrypt'))
+  =/  mac-key=@  (shay 36 (cat 3 shared 'authenticate'))
+  ::  verify MAC before decrypting
+  =/  expected-mac=@  (shay (add 32 ct-len) (cat 3 mac-key ciphertext))
+  ?.  =(mac expected-mac)  ~
+  =/  keystream=@  (stream-bytes enc-key ct-len)
+  `(mix ciphertext keystream)
 ::
 ++  stream-bytes
   |=  [seed=@ n=@ud]
@@ -296,7 +335,7 @@
   $(to-remove t.to-remove)
 --
 ^-  agent:gall
-=|  state-6
+=|  state-8
 =*  state  -
 |_  =bowl:gall
 +*  this  .
@@ -315,6 +354,8 @@
         mint-keysets    *(map @t (map @ud @t))
         pending-mints   *(map @t pending-mint-quote)
         pending-verifies  *(map @t pending-verify)
+        in-flight       *(map @t [proofs=(list cashu-proof) mint=@t expiry=@da])
+        pending-melts   *(map @t pending-melt)
       ==
   :~  [%pass /eyre/connect %arvo %e %connect [~ /vitriol] dap.bowl]
   ==
@@ -330,8 +371,40 @@
   =/  empty-keysets  *(map @t (map @ud @t))
   =/  empty-pending  *(map @t pending-mint-quote)
   =/  empty-verifies  *(map @t pending-verify)
+  =/  empty-flights  *(map @t [proofs=(list cashu-proof) mint=@t expiry=@da])
+  =/  empty-melts  *(map @t pending-melt)
   ?-  -.old
-    %6  [~[eyre-card] this(state old)]
+    %8  [~[eyre-card] this(state old)]
+    %7
+      :_  %=  this
+            ecash-key       ecash-key.old
+            banned          banned.old
+            require-payment  require-payment.old
+            sats-per-pr     sats-per-pr.old
+            mint            mint.old
+            wallet          wallet.old
+            mint-keysets    mint-keysets.old
+            pending-mints   pending-mints.old
+            pending-verifies  pending-verifies.old
+            in-flight       in-flight.old
+            pending-melts   empty-melts
+          ==
+      ~[eyre-card]
+    %6
+      :_  %=  this
+            ecash-key       ecash-key.old
+            banned          banned.old
+            require-payment  require-payment.old
+            sats-per-pr     sats-per-pr.old
+            mint            mint.old
+            wallet          wallet.old
+            mint-keysets    mint-keysets.old
+            pending-mints   pending-mints.old
+            pending-verifies  pending-verifies.old
+            in-flight       empty-flights
+            pending-melts   empty-melts
+          ==
+      ~[eyre-card]
     %5
       :_  %=  this
             ecash-key       ecash-key.old
@@ -343,6 +416,8 @@
             mint-keysets    mint-keysets.old
             pending-mints   pending-mints.old
             pending-verifies  empty-verifies
+            in-flight       empty-flights
+            pending-melts   empty-melts
           ==
       ~[eyre-card]
     %4
@@ -356,6 +431,8 @@
             mint-keysets    empty-keysets
             pending-mints   empty-pending
             pending-verifies  empty-verifies
+            in-flight       empty-flights
+            pending-melts   empty-melts
           ==
       ~[eyre-card]
     %3
@@ -369,6 +446,8 @@
             mint-keysets    empty-keysets
             pending-mints   empty-pending
             pending-verifies  empty-verifies
+            in-flight       empty-flights
+            pending-melts   empty-melts
           ==
       ~[eyre-card]
     %2
@@ -382,6 +461,8 @@
             mint-keysets    empty-keysets
             pending-mints   empty-pending
             pending-verifies  empty-verifies
+            in-flight       empty-flights
+            pending-melts   empty-melts
           ==
       ~[eyre-card]
     %1
@@ -396,6 +477,8 @@
             mint-keysets    empty-keysets
             pending-mints   empty-pending
             pending-verifies  empty-verifies
+            in-flight       empty-flights
+            pending-melts   empty-melts
           ==
       ~[eyre-card]
     %0
@@ -410,6 +493,8 @@
             mint-keysets    empty-keysets
             pending-mints   empty-pending
             pending-verifies  empty-verifies
+            in-flight       empty-flights
+            pending-melts   empty-melts
           ==
       ~[eyre-card]
   ==
@@ -451,6 +536,7 @@
           mint
           wallet
           pending-mints
+          pending-melts
           to-hex
         ==
       ==
@@ -529,6 +615,49 @@
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       :_  this(sats-per-pr ?:(=(0 u.price) ~ price))
       (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ::
+      ::  POST /vitriol/admin/withdraw — withdraw tokens to Lightning
+      ::
+        [%vitriol %admin %withdraw ~]
+      ?.  =(meth %'POST')
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  body=@t  (crip (trip q:(need body.request.req)))
+      =/  pairs  (rush body yquy:de-purl:html)
+      ?~  pairs
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  mint-val  (parse-form-field u.pairs 'mint')
+      =/  invoice-val  (parse-form-field u.pairs 'invoice')
+      ?~  mint-val
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ?~  invoice-val
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ?:  |(=('' u.mint-val) =('' u.invoice-val))
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  mint-clean=tape  (clean-mint-url:ca u.mint-val)
+      =/  mint-cord=@t  (crip mint-clean)
+      =/  proofs=(list cashu-proof)  (~(gut by wallet) mint-cord ~)
+      ?:  =(~ proofs)
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ::  request melt quote
+      =/  nonce=@t  (scot %uv (sham [eny.bowl now.bowl 'melt']))
+      =.  pending-melts
+        %+  ~(put by pending-melts)  nonce
+        [mint-cord %quote u.invoice-val ~ '' 0]
+      =/  quote-body=@t  (en:json:html (build-melt-quote-request:ca u.invoice-val 'sat'))
+      =/  quote-octs=octs  [(met 3 quote-body) quote-body]
+      =/  quote-url=@t  (crip (weld mint-clean "/v1/melt/quote/bolt11"))
+      =/  http-cards=(list card)
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  iris-card=card
+        [%pass /iris/melt/[nonce] %arvo %i %request [%'POST' quote-url ~[['content-type' 'application/json']] `quote-octs] *outbound-config:iris]
+      :_  this
+      (snoc http-cards iris-card)
       ::
       ::  POST /vitriol/admin/set-mint — set mint URL
       ::
@@ -707,17 +836,18 @@
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
       =/  selected=(list cashu-proof)  selected.u.selection
       =/  token-total=@ud  (roll selected |=([p=cashu-proof a=@ud] (add a amount.p)))
-      =/  tokens-cord=@t
-        %-  en:json:html
-        :-  %a
-        %+  turn  selected
-        |=  p=cashu-proof
-        %-  pairs:enjs:format
-        :~  ['amount' (numb:enjs:format amount.p)]
-            ['id' s+id.p]
-            ['secret' s+secret.p]
-            ['C' s+c.p]
-        ==
+      ::  determine the source mint for selected tokens
+      =/  token-mint=@t
+        =/  mints  ~(tap by remaining.u.selection)
+        ::  the mint that lost proofs is the source
+        =/  orig-mints  ~(tap by wallet)
+        =/  changed
+          %+  skim  orig-mints
+          |=  [m=@t ps=(list cashu-proof)]
+          =/  new-ps  (~(gut by remaining.u.selection) m ~)
+          !=(ps new-ps)
+        ?~  changed  ?~(mints '' -.i.mints)
+        -.i.changed
       ::  encrypt tokens if maintainer ecash pubkey provided
       =/  recipient-pub=(unit @)
         =/  rp  (~(get by fields) 'ecash_pubkey')
@@ -725,6 +855,25 @@
         ?.  ?=([%s *] u.rp)  ~
         ?:  =('' p.u.rp)  ~
         `(from-hex p.u.rp)
+      ::  build token payload — include mint URL in encrypted data
+      =/  token-payload=@t
+        %-  en:json:html
+        %-  pairs:enjs:format
+        :~  ['mint' s+token-mint]
+            :-  'tokens'
+            :-  %a
+            %+  turn  selected
+            |=  p=cashu-proof
+            %-  pairs:enjs:format
+            :~  ['amount' (numb:enjs:format amount.p)]
+                ['id' s+id.p]
+                ['secret' s+secret.p]
+                ['C' s+c.p]
+            ==
+        ==
+      ::  move tokens to in-flight with 30 minute TTL
+      =/  flight-nonce=@t  (scot %uv (sham [eny.bowl now.bowl 'flight']))
+      =/  flight-expiry=@da  (add now.bowl ~m30)
       =/  result=json
         ?~  recipient-pub
           ::  no pubkey — send tokens in plaintext (local use only)
@@ -732,25 +881,32 @@
           :~  ['signature' s+(to-hex 128 sig)]
               ['signer_id' s+(scot %p our.bowl)]
               ['pass' s+(to-hex 130 pass.u.deed)]
-              ['ecash_tokens' s+tokens-cord]
+              ['ecash_tokens' s+token-payload]
               ['ecash_amount' (numb:enjs:format token-total)]
               ['ecash_encrypted' b+%.n]
           ==
-        ::  encrypt tokens with maintainer's pubkey
-        =/  pt-len=@ud  (met 3 tokens-cord)
-        =/  [eph-pub=@ ct=@ ct-len=@ud]
-          (ecash-encrypt tokens-cord pt-len u.recipient-pub)
+        ::  encrypt with maintainer's pubkey (authenticated)
+        =/  pt-len=@ud  (met 3 token-payload)
+        =/  [eph-pub=@ ct=@ ct-len=@ud mac=@]
+          (ecash-encrypt token-payload pt-len u.recipient-pub eny.bowl)
         %-  pairs:enjs:format
         :~  ['signature' s+(to-hex 128 sig)]
             ['signer_id' s+(scot %p our.bowl)]
             ['pass' s+(to-hex 130 pass.u.deed)]
             ['ecash_ciphertext' s+(to-hex (mul 2 ct-len) ct)]
             ['ecash_ephemeral_pubkey' s+(to-hex 64 eph-pub)]
+            ['ecash_mac' s+(to-hex 64 mac)]
             ['ecash_amount' (numb:enjs:format token-total)]
             ['ecash_encrypted' b+%.y]
         ==
-      :_  this(wallet remaining.u.selection)
-      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      =.  wallet  remaining.u.selection
+      =.  in-flight  (~(put by in-flight) flight-nonce [selected token-mint flight-expiry])
+      :_  this
+      %+  weld
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ^-  (list card)
+      :~  [%pass /timer/in-flight/[flight-nonce] %arvo %b %wait flight-expiry]
+      ==
       ::
       ::  POST /vitriol/verify-commit — verify signature against on-chain key
       ::
@@ -817,40 +973,63 @@
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::  signature valid — parse ecash tokens if present
-      ::  tokens may be encrypted (ciphertext + ephemeral pubkey) or plaintext
-      =/  incoming-tokens=(list cashu-proof)
+      ::  tokens may be encrypted (ciphertext + ephemeral pubkey + mac) or plaintext
+      =/  token-result=[tokens=(list cashu-proof) mint=@t]
         ::  try encrypted path first
         =/  ct-hex  (~(get by fields) 'ecash_ciphertext')
         =/  eph-hex  (~(get by fields) 'ecash_ephemeral_pubkey')
-        ?:  &(?=(^ ct-hex) ?=(^ eph-hex) ?=([%s *] u.ct-hex) ?=([%s *] u.eph-hex))
+        =/  mac-hex  (~(get by fields) 'ecash_mac')
+        ?:  &(?=(^ ct-hex) ?=(^ eph-hex) ?=(^ mac-hex) ?=([%s *] u.ct-hex) ?=([%s *] u.eph-hex) ?=([%s *] u.mac-hex))
           ::  decrypt using our ecash secret key
-          ?~  ecash-key  ~
+          ?~  ecash-key  [~ '']
           =/  ct=@  (from-hex p.u.ct-hex)
           =/  ct-len=@ud  (div (lent (trip p.u.ct-hex)) 2)
           =/  eph-pub=@  (from-hex p.u.eph-hex)
-          =/  plaintext=@  (ecash-decrypt ct ct-len eph-pub sec.u.ecash-key)
-          =/  tok-json  (de:json:html plaintext)
-          ?~  tok-json  ~
-          ?.  ?=([%a *] u.tok-json)  ~
-          (parse-token-list p.u.tok-json)
-        ::  try plaintext path
+          =/  mac=@  (from-hex p.u.mac-hex)
+          =/  plaintext  (ecash-decrypt ct ct-len eph-pub sec.u.ecash-key mac)
+          ?~  plaintext  [~ '']
+          =/  payload-json  (de:json:html u.plaintext)
+          ?~  payload-json  [~ '']
+          ?.  ?=([%o *] u.payload-json)  [~ '']
+          ::  extract mint and tokens from decrypted payload
+          =/  dec-mint=@t
+            =/  m  (~(get by p.u.payload-json) 'mint')
+            ?~  m  ''
+            ?.  ?=([%s *] u.m)  ''
+            p.u.m
+          =/  dec-tokens
+            =/  t  (~(get by p.u.payload-json) 'tokens')
+            ?~  t  ~
+            ?.  ?=([%a *] u.t)  ~
+            (parse-token-list p.u.t)
+          [dec-tokens dec-mint]
+        ::  try plaintext path (backwards compat)
         =/  tok  (~(get by fields) 'ecash_tokens')
-        ?~  tok  ~
-        ::  could be a JSON string (serialized) or a JSON array
+        =/  m-val=@t
+          =/  m  (~(get by fields) 'mint')
+          ?~  m  ''
+          ?.  ?=([%s *] u.m)  ''
+          p.u.m
+        ?~  tok  [~ m-val]
         ?:  ?=([%s *] u.tok)
           =/  tok-json  (de:json:html p.u.tok)
-          ?~  tok-json  ~
-          ?.  ?=([%a *] u.tok-json)  ~
-          (parse-token-list p.u.tok-json)
-        ?.  ?=([%a *] u.tok)  ~
-        (parse-token-list p.u.tok)
+          ?~  tok-json  [~ m-val]
+          ::  could be {mint, tokens} object or bare array
+          ?:  ?=([%o *] u.tok-json)
+            =/  tm  (~(get by p.u.tok-json) 'mint')
+            =/  tt  (~(get by p.u.tok-json) 'tokens')
+            =/  dec-mint  ?~(tm m-val ?.(?=([%s *] u.tm) m-val p.u.tm))
+            ?~  tt  [~ dec-mint]
+            ?.  ?=([%a *] u.tt)  [~ dec-mint]
+            [(parse-token-list p.u.tt) dec-mint]
+          ?.  ?=([%a *] u.tok-json)  [~ m-val]
+          [(parse-token-list p.u.tok-json) m-val]
+        ?.  ?=([%a *] u.tok)  [~ m-val]
+        [(parse-token-list p.u.tok) m-val]
+      =/  incoming-tokens=(list cashu-proof)  tokens.token-result
       =/  token-total=@ud
         (roll incoming-tokens |=([p=cashu-proof a=@ud] (add a amount.p)))
-      =/  mint-url-cord=@t
-        =/  m  (~(get by fields) 'mint')
-        ?~  m  ''
-        ?.  ?=([%s *] u.m)  ''
-        p.u.m
+      =/  mint-url-cord=@t  mint.token-result
       ::  check payment requirement
       ?:  &(require-payment ?=(^ sats-per-pr) (lth token-total u.sats-per-pr))
         =/  result=json
@@ -1380,6 +1559,69 @@
     :~  [%pass /iris/mint-check/[nonce] %arvo %i %request [%'GET' check-url ~ ~] *outbound-config:iris]
     ==
   ::
+  ::  -- In-flight token recovery: NUT-03 swap after 30 min TTL --
+  ::
+      [%timer %in-flight @ ~]
+    =/  fid=@t  i.t.t.wire
+    =/  flight  (~(get by in-flight) fid)
+    ?~  flight  `this
+    ?.  ?=([%behn %wake *] sign-arvo)  `this
+    ::  TTL expired — swap these tokens at the mint for fresh ones
+    =/  flight-mint=@t  mint.u.flight
+    ?:  =('' flight-mint)
+      ::  no mint URL — just return tokens to wallet as-is
+      =/  existing=(list cashu-proof)  (~(gut by wallet) flight-mint ~)
+      =.  wallet  (~(put by wallet) flight-mint (weld existing proofs.u.flight))
+      =.  in-flight  (~(del by in-flight) fid)
+      `this
+    ::  get keyset id from first token
+    =/  keyset-id=@t  id:(snag 0 proofs.u.flight)
+    ::  check if we have cached keys for this keyset
+    =/  cached-keys  (~(get by mint-keysets) keyset-id)
+    =/  mint-clean=tape  (clean-mint-url:ca flight-mint)
+    ?~  cached-keys
+      ::  need to fetch keys first — reuse verify-keys flow
+      ::  store as a pending-verify with the in-flight tokens
+      =.  pending-verifies
+        %+  ~(put by pending-verifies)  fid
+        :*  our.bowl
+            0
+            flight-mint
+            proofs.u.flight
+            (roll proofs.u.flight |=([p=cashu-proof a=@ud] (add a amount.p)))
+            %fetch-keys
+            keyset-id
+            *(list @t)
+            *(list @)
+            %pending
+            ''
+        ==
+      =.  in-flight  (~(del by in-flight) fid)
+      =/  keys-url=@t  (crip ;:(weld mint-clean "/v1/keys/" (trip keyset-id)))
+      :_  this
+      :~  [%pass /iris/verify-keys/[fid] %arvo %i %request [%'GET' keys-url ~ ~] *outbound-config:iris]
+      ==
+    ::  have keys — build swap directly
+    =.  pending-verifies
+      %+  ~(put by pending-verifies)  fid
+      :*  our.bowl
+          0
+          flight-mint
+          proofs.u.flight
+          (roll proofs.u.flight |=([p=cashu-proof a=@ud] (add a amount.p)))
+          %fetch-keys
+          keyset-id
+          *(list @t)
+          *(list @)
+          %pending
+          ''
+      ==
+    =.  in-flight  (~(del by in-flight) fid)
+    =/  keys-url=@t  (crip ;:(weld mint-clean "/v1/keys/" (trip keyset-id)))
+    :_  this
+    :~  [%pass /iris/verify-keys/[fid] %arvo %i %request [%'GET' keys-url ~ ~] *outbound-config:iris]
+    ==
+  ::
   ::  -- Verify flow: fetch keyset keys for swap --
   ::
       [%iris %verify-keys @ ~]
@@ -1530,6 +1772,111 @@
       (~(put by pending-verifies) vid u.pv(result %verified))
     ~&  >  [%verify-swap-success (lent new-proofs) %proofs token-total.u.pv %sats]
     `this
+  ::
+  ::  -- Melt flow: withdraw tokens to Lightning --
+  ::
+      [%iris %melt @ ~]
+    =/  nonce=@t  i.t.t.wire
+    =/  pm  (~(get by pending-melts) nonce)
+    ?~  pm  `this
+    ?.  ?=([%iris %http-response *] sign-arvo)
+      ::  restore proofs on failure if we were in execute step
+      ?.  =(%execute step.u.pm)
+        =.  pending-melts  (~(del by pending-melts) nonce)
+        `this
+      =/  existing=(list cashu-proof)  (~(gut by wallet) mint.u.pm ~)
+      =.  wallet  (~(put by wallet) mint.u.pm (weld existing proofs-used.u.pm))
+      =.  pending-melts  (~(del by pending-melts) nonce)
+      `this
+    =/  =client-response:iris  client-response.sign-arvo
+    ?.  ?=([%finished *] client-response)  `this
+    =/  response=response-header:http  response-header.client-response
+    =/  body=(unit octs)  ?~(full-file.client-response ~ `data.u.full-file.client-response)
+    ?.  =(200 status-code.response)
+      ~&  >>>  [%melt-rejected status-code.response]
+      ::  restore proofs if in execute step
+      ?.  =(%execute step.u.pm)
+        =.  pending-melts  (~(del by pending-melts) nonce)
+        `this
+      =/  existing=(list cashu-proof)  (~(gut by wallet) mint.u.pm ~)
+      =.  wallet  (~(put by wallet) mint.u.pm (weld existing proofs-used.u.pm))
+      =.  pending-melts  (~(del by pending-melts) nonce)
+      `this
+    ?~  body
+      =.  pending-melts  (~(del by pending-melts) nonce)
+      `this
+    =/  resp-json  (de:json:html q.u.body)
+    ?~  resp-json
+      =.  pending-melts  (~(del by pending-melts) nonce)
+      `this
+    =/  jon  u.resp-json
+    ?-  step.u.pm
+        %quote
+      ::  parse melt quote and select proofs
+      =/  quote-result  (parse-melt-quote:ca jon)
+      ?~  quote-result
+        ~&  >>>  %melt-bad-quote
+        =.  pending-melts  (~(del by pending-melts) nonce)
+        `this
+      =/  [quote-id=@t quote-amt=@ud fee-res=@ud]  u.quote-result
+      =/  needed=@ud  (add quote-amt fee-res)
+      =/  all-proofs=(list cashu-proof)  (~(gut by wallet) mint.u.pm ~)
+      ::  select proofs greedily until we cover needed amount
+      =/  selected=(list cashu-proof)  ~
+      =/  remaining=(list cashu-proof)  ~
+      =/  selected-total=@ud  0
+      =/  to-scan=(list cashu-proof)  all-proofs
+      |-  ^-  (quip card _this)
+      ?:  (gte selected-total needed)
+        ::  have enough — execute melt
+        =.  remaining  (weld remaining to-scan)
+        =/  melt-body=@t
+          %-  en:json:html
+          %+  build-melt-request:ca  quote-id
+          %+  turn  selected
+          |=(p=cashu-proof [amount.p id.p secret.p c.p])
+        =/  melt-octs=octs  [(met 3 melt-body) melt-body]
+        =/  mint-clean=tape  (clean-mint-url:ca mint.u.pm)
+        =/  melt-url=@t  (crip (weld mint-clean "/v1/melt/bolt11"))
+        =.  pending-melts
+          (~(put by pending-melts) nonce u.pm(step %execute, proofs-used selected, quote-id quote-id, fee-reserve fee-res))
+        =.  wallet  (~(put by wallet) mint.u.pm remaining)
+        :_  this
+        :~  [%pass /iris/melt/[nonce] %arvo %i %request [%'POST' melt-url ~[['content-type' 'application/json']] `melt-octs] *outbound-config:iris]
+        ==
+      ?~  to-scan
+        ::  not enough proofs
+        ~&  >>>  [%melt-insufficient-funds needed selected-total]
+        =.  pending-melts  (~(del by pending-melts) nonce)
+        `this
+      %=  $
+        selected  [i.to-scan selected]
+        selected-total  (add selected-total amount.i.to-scan)
+        to-scan  t.to-scan
+      ==
+    ::
+        %execute
+      ::  melt completed — check result
+      =/  melt-result  (parse-melt-response:ca jon)
+      ?~  melt-result
+        ~&  >>>  %melt-bad-response
+        ::  restore proofs
+        =/  existing=(list cashu-proof)  (~(gut by wallet) mint.u.pm ~)
+        =.  wallet  (~(put by wallet) mint.u.pm (weld existing proofs-used.u.pm))
+        =.  pending-melts  (~(del by pending-melts) nonce)
+        `this
+      ?.  paid.u.melt-result
+        ~&  >>>  [%melt-not-paid state.u.melt-result]
+        ::  restore proofs
+        =/  existing=(list cashu-proof)  (~(gut by wallet) mint.u.pm ~)
+        =.  wallet  (~(put by wallet) mint.u.pm (weld existing proofs-used.u.pm))
+        =.  pending-melts  (~(del by pending-melts) nonce)
+        `this
+      ::  success — proofs already removed from wallet
+      ~&  >  %melt-success
+      =.  pending-melts  (~(del by pending-melts) nonce)
+      `this
+    ==
   ==
 ++  on-fail   on-fail:def
 --

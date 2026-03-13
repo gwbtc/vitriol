@@ -25,6 +25,15 @@
       blinding-factors=(list @)
   ==
 ::
++$  pending-melt
+  $:  mint=@t
+      step=?(%quote %execute)
+      invoice=@t
+      proofs-used=(list cashu-proof)
+      quote-id=@t
+      fee-reserve=@ud
+  ==
+::
 +$  pending-verify
   $:  signer=@p
       life=@ud

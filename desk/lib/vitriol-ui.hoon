@@ -176,10 +176,18 @@
           mint=(unit @t)
           wallet=(map @t (list cashu-proof))
           pending-mints=(map @t pending-mint-quote)
+          pending-melts=(map @t pending-melt)
           to-hex=$-([@ud @] @t)
       ==
   ^-  manx
   =/  ships=(list @p)  ~(tap in banned)
+  =/  num-melts=@ud  ~(wyt by pending-melts)
+  =/  wallet-entries=(list [@t @ud @ud])
+    %+  murn  ~(tap by wallet)
+    |=  [m=@t proofs=(list cashu-proof)]
+    =/  total=@ud  (roll proofs |=([p=cashu-proof a=@ud] (add a amount.p)))
+    ?:  =(0 total)  ~
+    `[m total (lent proofs)]
   =/  balance=@ud
     %-  ~(rep by wallet)
     |=  [[m=@t proofs=(list cashu-proof)] acc=@ud]
@@ -252,6 +260,29 @@
             ;div
               ;label: encryption public key (for receiving ecash)
               ;div.val: {(trip (to-hex 64 pub.u.ecash-key))}
+            ==
+      ==
+      ;section
+        ;h2: received tokens
+        ;+  ?:  (gth num-melts 0)
+              ;div.pending: withdrawal in progress...
+            ;div;
+        ;+  ?:  =(~ wallet-entries)
+              ;div.empty: no tokens received yet
+            ;div
+              ;*  %+  turn  wallet-entries
+                  |=  [m=@t total=@ud count=@ud]
+                  ^-  manx
+                  ;div
+                    ;label: {(trip m)}
+                    ;div.val: {(trip (scot %ud total))} sats ({(trip (scot %ud count))} proofs)
+                    ;form(method "POST", action "/vitriol/admin/withdraw")
+                      ;input(type "hidden", name "mint", value (trip m));
+                      ;label: lightning invoice
+                      ;input(type "text", name "invoice", placeholder "lnbc...");
+                      ;input(type "submit", value "Withdraw to Lightning");
+                    ==
+                  ==
             ==
       ==
       ;section
