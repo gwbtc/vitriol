@@ -277,6 +277,8 @@ The agent maintains:
 - **mint-keysets** — cached keyset keys from mints
 - **pending-mints** — in-flight Lightning invoice → token flows
 - **pending-verifies** — in-flight NUT-03 swap verifications
+- **in-flight** — tokens selected for signing, held in escrow with 30-minute TTL before NUT-03 swap recovery
+- **pending-melts** — in-flight Lightning withdrawal (NUT-05 melt) requests
 
 ### Cryptography
 

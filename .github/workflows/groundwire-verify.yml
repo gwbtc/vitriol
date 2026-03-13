@@ -143,6 +143,7 @@ jobs:
                 if [ "$i" = "60" ]; then
                   echo "::error::Commit ${SHORT}: ecash verification timed out after 5 minutes"
                   RESPONSE='{"verified":false,"error":"ecash verification timed out"}'
+                  break
                 fi
               done
             fi
