@@ -1,21 +1,37 @@
 ::  /app/vitriol/hoon
-::  Groundwire for GitHub — commit signing & on-chain identity verification
+::  Groundwire for GitHub — commit signing, verification, and ecash payment
 ::
-::  Two modes:
-::    Signer (committer's ship):  POST /vitriol/sign
-::    Verifier (CI's ship):       POST /vitriol/verify-commit
+::  Roles:
+::    Committer:   POST /vitriol/sign — signs commits with Ed25519 networking key
+::    Maintainer:  POST /vitriol/verify-commit — verifies signatures against on-chain key
 ::
-::  The signer signs commit content with the ship's Ed25519 networking
-::  key — the same key attested on-chain via a Groundwire inscription.
-::  The verifier checks the signature against the signer's on-chain
-::  pass by scrying Jael (populated by ord-watcher).
+::  Signing uses the ship's Ed25519 networking key — the same key attested
+::  on-chain via a Groundwire inscription. Verification checks the signature
+::  against the signer's on-chain pass by scrying Jael (populated by
+::  ord-watcher).
 ::
-/+  default-agent, server
+::  Ecash (optional):
+::    Maintainers can set a sats-per-PR price. Committers configure a Cashu
+::    mint and load sats via Lightning invoices. When signing, the agent
+::    selects tokens from the wallet (>= required, <= 110%) and includes
+::    them in the response. On verification, the maintainer NUT-03 swaps
+::    the tokens at the mint to confirm their value before accepting.
+::
+::  Admin UI at /vitriol/admin (Sail). Landing page at /vitriol.
+::  All endpoints require Eyre authentication.
+::
+/-  *vitriol
+/+  default-agent, server, vitriol-ui, cashu
 |%
 +$  card  card:agent:gall
 +$  versioned-state
   $%  state-0
       state-1
+      state-2
+      state-3
+      state-4
+      state-5
+      state-6
   ==
 +$  state-0
   $:  %0
@@ -27,6 +43,45 @@
   $:  %1
       ~
   ==
++$  state-2
+  $:  %2
+      ecash-key=(unit [sec=@ pub=@])
+  ==
++$  state-3
+  $:  %3
+      ecash-key=(unit [sec=@ pub=@])
+      banned=(set @p)
+  ==
++$  state-4
+  $:  %4
+      ecash-key=(unit [sec=@ pub=@])
+      banned=(set @p)
+      require-payment=?
+  ==
++$  state-5
+  $:  %5
+      ecash-key=(unit [sec=@ pub=@])
+      banned=(set @p)
+      require-payment=?
+      mint=(unit @t)
+      wallet=(map @t (list cashu-proof))
+      mint-keysets=(map @t (map @ud @t))
+      pending-mints=(map @t pending-mint-quote)
+  ==
++$  state-6
+  $:  %6
+      ecash-key=(unit [sec=@ pub=@])
+      banned=(set @p)
+      require-payment=?
+      sats-per-pr=(unit @ud)
+      mint=(unit @t)
+      wallet=(map @t (list cashu-proof))
+      mint-keysets=(map @t (map @ud @t))
+      pending-mints=(map @t pending-mint-quote)
+      pending-verifies=(map @t pending-verify)
+  ==
+::
+++  ca  cashu
 ::
 ++  to-hex
   |=  [width=@ val=@]
@@ -82,9 +137,84 @@
     ==
   ?.  ?=(%& -.result)  ~
   `;;(@ p.result)
+++  gen-ecash-key
+  |=  eny=@uvJ
+  ^-  [sec=@ pub=@]
+  =/  sec=@  (end [3 32] eny)
+  =/  pub=@  (scalarmult-base:ed:crypto sec)
+  [sec pub]
+::
+++  wallet-balance
+  |=  w=(map @t (list cashu-proof))
+  ^-  @ud
+  %-  ~(rep by w)
+  |=  [[mint=@t proofs=(list cashu-proof)] acc=@ud]
+  (add acc (roll proofs |=([p=cashu-proof a=@ud] (add a amount.p))))
+::
+++  parse-form-field
+  |=  [pairs=(list [@t @t]) field=@t]
+  ^-  (unit @t)
+  =/  matches  (skim pairs |=([k=@t *] =(k field)))
+  ?~  matches  ~
+  `+.i.matches
+::
+::  Select proofs from wallet totaling >= required but <= 110% of required.
+::  Returns (unit [selected remaining]) where selected are the proofs to spend
+::  and remaining is the updated wallet.
+::  Fails (returns ~) if no valid selection exists.
+::
+++  select-proofs
+  |=  [w=(map @t (list cashu-proof)) required=@ud]
+  ^-  (unit [selected=(list cashu-proof) remaining=(map @t (list cashu-proof))])
+  =/  max=@ud  (div (mul required 11) 10)
+  ::  flatten all proofs with their mint
+  =/  all=(list [mint=@t proof=cashu-proof])
+    %-  zing
+    %+  turn  ~(tap by w)
+    |=  [m=@t ps=(list cashu-proof)]
+    (turn ps |=(p=cashu-proof [m p]))
+  ::  sort by amount descending for greedy selection
+  =/  sorted=(list [mint=@t proof=cashu-proof])
+    %+  sort  all
+    |=  [a=[mint=@t proof=cashu-proof] b=[mint=@t proof=cashu-proof]]
+    (gth amount.proof.a amount.proof.b)
+  ::  greedy: take largest proofs until we meet the requirement
+  =/  selected=(list [mint=@t proof=cashu-proof])  ~
+  =/  total=@ud  0
+  =/  rest=(list [mint=@t proof=cashu-proof])  sorted
+  |-
+  ?:  (gte total required)
+    ::  we have enough — check 110% cap
+    ?:  (gth total max)  ~
+    ::  build results
+    =/  sel=(list cashu-proof)  (turn selected |=([m=@t p=cashu-proof] p))
+    ::  rebuild wallet minus selected
+    =/  new-wallet=(map @t (list cashu-proof))  w
+    |-  ^-  (unit [selected=(list cashu-proof) remaining=(map @t (list cashu-proof))])
+    ?~  selected
+      `[sel new-wallet]
+    =/  m=@t  mint.i.selected
+    =/  p=cashu-proof  proof.i.selected
+    =/  existing=(list cashu-proof)  (~(gut by new-wallet) m ~)
+    =/  updated=(list cashu-proof)
+      %+  skip  existing
+      |=  e=cashu-proof
+      &(=(secret.e secret.p) =(amount.e amount.p))
+    =.  new-wallet
+      ?:  =(~ updated)
+        (~(del by new-wallet) m)
+      (~(put by new-wallet) m updated)
+    $(selected t.selected)
+  ?~  rest  ~
+  =/  candidate  i.rest
+  =/  new-total  (add total amount.proof.candidate)
+  ::  skip if adding this proof would push past 110% when we're already >= required
+  ?:  &((gte (add total amount.proof.candidate) required) (gth new-total max))
+    $(rest t.rest)
+  $(selected [candidate selected], total new-total, rest t.rest)
 --
 ^-  agent:gall
-=|  state-1
+=|  state-6
 =*  state  -
 |_  =bowl:gall
 +*  this  .
@@ -92,7 +222,18 @@
 ::
 ++  on-init
   ^-  (quip card _this)
-  :_  this
+  =/  kp  (gen-ecash-key eny.bowl)
+  :_  %=  this
+        ecash-key       `kp
+        banned          *(set @p)
+        require-payment  %.n
+        sats-per-pr     ~
+        mint            ~
+        wallet          *(map @t (list cashu-proof))
+        mint-keysets    *(map @t (map @ud @t))
+        pending-mints   *(map @t pending-mint-quote)
+        pending-verifies  *(map @t pending-verify)
+      ==
   :~  [%pass /eyre/connect %arvo %e %connect [~ /vitriol] dap.bowl]
   ==
 ::
@@ -102,9 +243,93 @@
   |=  =vase
   ^-  (quip card _this)
   =/  old  !<(versioned-state vase)
+  =/  eyre-card=card  [%pass /eyre/connect %arvo %e %connect [~ /vitriol] dap.bowl]
+  =/  empty-wallet  *(map @t (list cashu-proof))
+  =/  empty-keysets  *(map @t (map @ud @t))
+  =/  empty-pending  *(map @t pending-mint-quote)
+  =/  empty-verifies  *(map @t pending-verify)
   ?-  -.old
-    %1  `this(state old)
-    %0  `this(state *state-1)
+    %6  [~[eyre-card] this(state old)]
+    %5
+      :_  %=  this
+            ecash-key       ecash-key.old
+            banned          banned.old
+            require-payment  require-payment.old
+            sats-per-pr     ~
+            mint            mint.old
+            wallet          wallet.old
+            mint-keysets    mint-keysets.old
+            pending-mints   pending-mints.old
+            pending-verifies  empty-verifies
+          ==
+      ~[eyre-card]
+    %4
+      :_  %=  this
+            ecash-key       ecash-key.old
+            banned          banned.old
+            require-payment  require-payment.old
+            sats-per-pr     ~
+            mint            ~
+            wallet          empty-wallet
+            mint-keysets    empty-keysets
+            pending-mints   empty-pending
+            pending-verifies  empty-verifies
+          ==
+      ~[eyre-card]
+    %3
+      :_  %=  this
+            ecash-key       ecash-key.old
+            banned          banned.old
+            require-payment  %.n
+            sats-per-pr     ~
+            mint            ~
+            wallet          empty-wallet
+            mint-keysets    empty-keysets
+            pending-mints   empty-pending
+            pending-verifies  empty-verifies
+          ==
+      ~[eyre-card]
+    %2
+      :_  %=  this
+            ecash-key       ecash-key.old
+            banned          *(set @p)
+            require-payment  %.n
+            sats-per-pr     ~
+            mint            ~
+            wallet          empty-wallet
+            mint-keysets    empty-keysets
+            pending-mints   empty-pending
+            pending-verifies  empty-verifies
+          ==
+      ~[eyre-card]
+    %1
+      =/  kp  (gen-ecash-key eny.bowl)
+      :_  %=  this
+            ecash-key       `kp
+            banned          *(set @p)
+            require-payment  %.n
+            sats-per-pr     ~
+            mint            ~
+            wallet          empty-wallet
+            mint-keysets    empty-keysets
+            pending-mints   empty-pending
+            pending-verifies  empty-verifies
+          ==
+      ~[eyre-card]
+    %0
+      =/  kp  (gen-ecash-key eny.bowl)
+      :_  %=  this
+            ecash-key       `kp
+            banned          *(set @p)
+            require-payment  %.n
+            sats-per-pr     ~
+            mint            ~
+            wallet          empty-wallet
+            mint-keysets    empty-keysets
+            pending-mints   empty-pending
+            pending-verifies  empty-verifies
+          ==
+      ~[eyre-card]
   ==
 ::
 ++  on-poke
@@ -123,6 +348,177 @@
       :_  this
       (give-simple-payload:app:server eyre-id not-found:gen:server)
       ::
+      ::  GET /vitriol — landing page
+      ::
+        [%vitriol ~]
+      :_  this
+      (html-response:vitriol-ui eyre-id (render-home:vitriol-ui our.bowl))
+      ::
+      ::  GET /vitriol/admin — admin UI
+      ::
+        [%vitriol %admin ~]
+      :_  this
+      %:  html-response:vitriol-ui
+        eyre-id
+        %:  render-admin:vitriol-ui
+          our.bowl
+          ecash-key
+          banned
+          require-payment
+          sats-per-pr
+          mint
+          wallet
+          pending-mints
+          to-hex
+        ==
+      ==
+      ::
+      ::  POST /vitriol/admin/ban — ban form action
+      ::
+        [%vitriol %admin %ban ~]
+      ?.  =(meth %'POST')
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  body=@t  (crip (trip q:(need body.request.req)))
+      =/  pairs  (rush body yquy:de-purl:html)
+      ?~  pairs
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  ship-val  (parse-form-field u.pairs 'ship')
+      ?~  ship-val
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  who  (slav %p u.ship-val)
+      :_  this(banned (~(put in banned) who))
+      (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ::
+      ::  POST /vitriol/admin/unban — unban form action
+      ::
+        [%vitriol %admin %unban ~]
+      ?.  =(meth %'POST')
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  body=@t  (crip (trip q:(need body.request.req)))
+      =/  pairs  (rush body yquy:de-purl:html)
+      ?~  pairs
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  ship-val  (parse-form-field u.pairs 'ship')
+      ?~  ship-val
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  who  (slav %p u.ship-val)
+      :_  this(banned (~(del in banned) who))
+      (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ::
+      ::  POST /vitriol/admin/toggle-payment — toggle require-payment
+      ::
+        [%vitriol %admin %toggle-payment ~]
+      :_  this(require-payment !require-payment)
+      (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ::
+      ::  POST /vitriol/admin/set-price — set sats per PR
+      ::
+        [%vitriol %admin %set-price ~]
+      ?.  =(meth %'POST')
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  body=@t  (crip (trip q:(need body.request.req)))
+      =/  pairs  (rush body yquy:de-purl:html)
+      ?~  pairs
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  price-val  (parse-form-field u.pairs 'price')
+      ?~  price-val
+        :_  this(sats-per-pr ~)
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ?:  =('' u.price-val)
+        :_  this(sats-per-pr ~)
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  price=@ud
+        (roll (trip u.price-val) |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
+      :_  this(sats-per-pr ?:(=(0 price) ~ `price))
+      (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ::
+      ::  POST /vitriol/admin/set-mint — set mint URL
+      ::
+        [%vitriol %admin %set-mint ~]
+      ?.  =(meth %'POST')
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  body=@t  (crip (trip q:(need body.request.req)))
+      =/  pairs  (rush body yquy:de-purl:html)
+      ?~  pairs
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  mint-val  (parse-form-field u.pairs 'mint')
+      ?~  mint-val
+        :_  this(mint ~)
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ?:  =('' u.mint-val)
+        :_  this(mint ~)
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      :_  this(mint `(crip (clean-mint-url:ca u.mint-val)))
+      (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ::
+      ::  POST /vitriol/admin/load-sats — request lightning invoice from mint
+      ::
+        [%vitriol %admin %load-sats ~]
+      ?.  =(meth %'POST')
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ?~  mint
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  body=@t  (crip (trip q:(need body.request.req)))
+      =/  pairs  (rush body yquy:de-purl:html)
+      ?~  pairs
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  amt-val  (parse-form-field u.pairs 'amount')
+      ?~  amt-val
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  amount=@ud
+        (roll (trip u.amt-val) |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
+      ?:  =(0 amount)
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  mint-clean=tape  (clean-mint-url:ca u.mint)
+      =/  mint-cord=@t  (crip mint-clean)
+      ::  check for cached keyset
+      =/  keyset-id=@t
+        =/  ks  ~(tap by mint-keysets)
+        ?~  ks  ''
+        -.i.ks
+      ::  generate nonce for this operation
+      =/  nonce=@t  (scot %uv (sham [eny.bowl now.bowl]))
+      =.  pending-mints
+        %+  ~(put by pending-mints)  nonce
+        :*  mint-cord
+            ''
+            ''
+            amount
+            keyset-id
+            *@da
+            ?:(=('' keyset-id) %fetch-keys %quote)
+            *(list @t)
+            *(list @)
+        ==
+      ?:  =('' keyset-id)
+        ::  need to fetch keysets first
+        =/  keys-url=@t  (crip (weld mint-clean "/v1/keysets"))
+        :_  this
+        :~  [%pass /iris/mint-keys/[nonce] %arvo %i %request [%'GET' keys-url ~ ~] *outbound-config:iris]
+        ==
+      ::  have keyset, go straight to quote
+      =/  quote-body=@t  (en:json:html (build-mint-quote-request:ca amount 'sat'))
+      =/  quote-octs=octs  [(met 3 quote-body) quote-body]
+      =/  quote-url=@t  (crip (weld mint-clean "/v1/mint/quote/bolt11"))
+      :_  this
+      :~  [%pass /iris/mint-quote/[nonce] %arvo %i %request [%'POST' quote-url ~[['content-type' 'application/json']] `quote-octs] *outbound-config:iris]
+      ==
+      ::
       ::  GET /vitriol/pubkey — return this ship's on-chain networking key
       ::
         [%vitriol %pubkey ~]
@@ -139,6 +535,33 @@
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
+      ::  GET /vitriol/ecash-pubkey — return this ship's ecash encryption pubkey
+      ::
+        [%vitriol %ecash-pubkey ~]
+      =/  result=json
+        ?~  ecash-key
+          (pairs:enjs:format ~[['configured' b+%.n] ['error' s+'ecash keypair not generated']])
+        %-  pairs:enjs:format
+        :~  ['configured' b+%.y]
+            ['pubkey' s+(to-hex 64 pub.u.ecash-key)]
+            ['ship' s+(scot %p our.bowl)]
+        ==
+      :_  this
+      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::
+      ::  GET /vitriol/sats-per-pr — return the maintainer's price
+      ::
+        [%vitriol %sats-per-pr ~]
+      =/  result=json
+        ?~  sats-per-pr
+          (pairs:enjs:format ~[['configured' b+%.n]])
+        %-  pairs:enjs:format
+        :~  ['configured' b+%.y]
+            ['sats' (numb:enjs:format u.sats-per-pr)]
+        ==
+      :_  this
+      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::
       ::  POST /vitriol/sign — sign commit content with networking key
       ::
         [%vitriol %sign ~]
@@ -146,7 +569,6 @@
         =/  err=json  (pairs:enjs:format ['error' s+'POST required']~)
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
-      ::  get our deed and ring from Jael
       =/  deed  (deed-safe bowl our.bowl)
       ?~  deed
         =/  err=json  (pairs:enjs:format ['error' s+'no keys in Jael']~)
@@ -157,24 +579,64 @@
         =/  err=json  (pairs:enjs:format ['error' s+'cannot read private key from Jael']~)
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
-      ::  extract Ed25519 signing seed from ring
-      ::  ring format (suite B): 1 byte 'B' + 32 bytes sgn-seed + 32 bytes cry-seed
       =/  sgn-seed  (end 8 (rsh 3 u.ring))
       =/  jon  (need (de:json:html q:(need body.request.req)))
-      =/  content  (so:dejs:format (~(got by ((om:dejs:format same) jon)) 'content'))
+      =/  fields  ((om:dejs:format same) jon)
+      =/  content  (so:dejs:format (~(got by fields) 'content'))
       =/  msg=octs  [(met 3 content) content]
       =/  sig=@  (sign-octs:ed:crypto msg sgn-seed)
+      ::  check if ecash tokens are requested
+      =/  sats-req=(unit @ud)
+        =/  sr  (~(get by fields) 'sats_required')
+        ?~  sr  ~
+        ?.  ?=([%n *] u.sr)  ~
+        =/  n=@ud  (roll (trip p.u.sr) |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
+        ?:(=(0 n) ~ `n)
+      ?~  sats-req
+        ::  no payment requested — plain signature
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['signature' s+(to-hex 128 sig)]
+              ['signer_id' s+(scot %p our.bowl)]
+              ['pass' s+(to-hex 130 pass.u.deed)]
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::  payment requested — select proofs from wallet
+      =/  selection  (select-proofs wallet u.sats-req)
+      ?~  selection
+        =/  err=json
+          %-  pairs:enjs:format
+          :~  ['error' s+'insufficient wallet balance or no valid token selection within 110% of required']
+              ['sats_required' (numb:enjs:format u.sats-req)]
+              ['wallet_balance' (numb:enjs:format (wallet-balance wallet))]
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server err))
+      =/  selected=(list cashu-proof)  selected.u.selection
+      =/  token-total=@ud  (roll selected |=([p=cashu-proof a=@ud] (add a amount.p)))
+      =/  tokens-json=json
+        :-  %a
+        %+  turn  selected
+        |=  p=cashu-proof
+        %-  pairs:enjs:format
+        :~  ['amount' (numb:enjs:format amount.p)]
+            ['id' s+id.p]
+            ['secret' s+secret.p]
+            ['C' s+c.p]
+        ==
       =/  result=json
         %-  pairs:enjs:format
         :~  ['signature' s+(to-hex 128 sig)]
             ['signer_id' s+(scot %p our.bowl)]
             ['pass' s+(to-hex 130 pass.u.deed)]
+            ['ecash_tokens' tokens-json]
+            ['ecash_amount' (numb:enjs:format token-total)]
         ==
-      :_  this
+      :_  this(wallet remaining.u.selection)
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
       ::  POST /vitriol/verify-commit — verify signature against on-chain key
-      ::  Body: {"signer":"~ship", "signature":"hex...", "payload":"..."}
       ::
         [%vitriol %verify-commit ~]
       ?.  =(meth %'POST')
@@ -186,9 +648,16 @@
       =/  signer-cord  (so:dejs:format (~(got by fields) 'signer'))
       =/  sig-hex      (so:dejs:format (~(got by fields) 'signature'))
       =/  payload       (so:dejs:format (~(got by fields) 'payload'))
-      ::  resolve signer
       =/  who  (slav %p signer-cord)
-      ::  scry Jael for signer's on-chain deed
+      ?:  (~(has in banned) who)
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.n]
+              ['signer' s+signer-cord]
+              ['error' s+'signer is banned']
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       =/  deed  (deed-safe bowl who)
       ?~  deed
         =/  result=json
@@ -208,28 +677,155 @@
           ==
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server result))
-      ::  extract Ed25519 signing pubkey from on-chain pass
-      ::  pass format (suite b): 1 byte 'b' + 32 bytes sgn-pub + 32 bytes cry-pub
       =/  sgn-pub  (end 8 (rsh 3 pass.u.deed))
       =/  sig=@  (from-hex sig-hex)
       =/  msg=octs  [(met 3 payload) payload]
       =/  valid=?  (veri-octs:ed:crypto sig msg sgn-pub)
-      =/  result=json
-        ?:  valid
+      ?.  valid
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.n]
+              ['signer' s+signer-cord]
+              ['error' s+'signature does not match on-chain key']
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::  signature valid — parse ecash tokens if present
+      =/  incoming-tokens=(list cashu-proof)
+        =/  tok  (~(get by fields) 'ecash_tokens')
+        ?~  tok  ~
+        ?.  ?=([%a *] u.tok)  ~
+        %+  murn  p.u.tok
+        |=  t=json
+        ^-  (unit cashu-proof)
+        ?.  ?=([%o *] t)  ~
+        =/  a  (~(get by p.t) 'amount')
+        =/  i  (~(get by p.t) 'id')
+        =/  s  (~(get by p.t) 'secret')
+        =/  c  (~(get by p.t) 'C')
+        ?~  a  ~
+        ?~  i  ~
+        ?~  s  ~
+        ?~  c  ~
+        =/  amt=@ud
+          ?.  ?=([%n *] u.a)  0
+          (roll (trip p.u.a) |=([ch=@ ac=@ud] (add (mul ac 10) (sub ch '0'))))
+        ?.  ?=([%s *] u.i)  ~
+        ?.  ?=([%s *] u.s)  ~
+        ?.  ?=([%s *] u.c)  ~
+        `[amt p.u.i p.u.s p.u.c]
+      =/  token-total=@ud
+        (roll incoming-tokens |=([p=cashu-proof a=@ud] (add a amount.p)))
+      =/  mint-url-cord=@t
+        =/  m  (~(get by fields) 'mint')
+        ?~  m  ''
+        ?.  ?=([%s *] u.m)  ''
+        p.u.m
+      ::  check payment requirement
+      ?:  &(require-payment ?=(^ sats-per-pr) (lth token-total u.sats-per-pr))
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.n]
+              ['signer' s+signer-cord]
+              ['error' s+'insufficient ecash payment']
+              ['sats_required' (numb:enjs:format u.sats-per-pr)]
+              ['sats_received' (numb:enjs:format token-total)]
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::  no tokens — just return verified
+      ?:  =(~ incoming-tokens)
+        =/  result=json
           %-  pairs:enjs:format
           :~  ['verified' b+%.y]
               ['signer' s+signer-cord]
               ['life' (numb:enjs:format life.u.deed)]
           ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::  tokens present — NUT-03 swap to verify value before accepting
+      ::  need mint URL to swap
+      ?:  =('' mint-url-cord)
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.n]
+              ['signer' s+signer-cord]
+              ['error' s+'ecash tokens included but no mint URL provided']
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::  get keyset id from first token
+      =/  keyset-id=@t  id:(snag 0 incoming-tokens)
+      =/  verify-id=@t  (scot %uv (sham [eny.bowl now.bowl 'verify']))
+      =/  mint-clean=tape  (clean-mint-url:ca mint-url-cord)
+      =.  pending-verifies
+        %+  ~(put by pending-verifies)  verify-id
+        :*  who
+            life.u.deed
+            (crip mint-clean)
+            incoming-tokens
+            token-total
+            %fetch-keys
+            keyset-id
+            *(list @t)
+            *(list @)
+            %pending
+            ''
+        ==
+      ::  fetch keyset keys for this keyset id
+      =/  keys-url=@t  (crip ;:(weld mint-clean "/v1/keys/" (trip keyset-id)))
+      =/  result=json
+        %-  pairs:enjs:format
+        :~  ['status' s+'pending']
+            ['verify_id' s+verify-id]
+            ['signer' s+signer-cord]
+            ['message' s+'verifying ecash tokens via NUT-03 swap']
+        ==
+      =/  http-cards=(list card)
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      =/  iris-card=card
+        [%pass /iris/verify-keys/[verify-id] %arvo %i %request [%'GET' keys-url ~ ~] *outbound-config:iris]
+      :_  this
+      (snoc http-cards iris-card)
+      ::
+      ::  GET /vitriol/verify-status/[id] — poll for swap verification result
+      ::
+        [%vitriol %verify-status *]
+      ?~  t.t.site.rl
+        :_  this
+        (give-simple-payload:app:server eyre-id not-found:gen:server)
+      =/  vid=@t  i.t.t.site.rl
+      =/  pv  (~(get by pending-verifies) vid)
+      ?~  pv
+        =/  result=json
+          (pairs:enjs:format ~[['error' s+'unknown verify_id']])
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      =/  result=json
+        ?:  =(%pending result.u.pv)
+          %-  pairs:enjs:format
+          :~  ['status' s+'pending']
+              ['verify_id' s+vid]
+          ==
+        ?:  =(%verified result.u.pv)
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.y]
+              ['signer' s+(scot %p signer.u.pv)]
+              ['life' (numb:enjs:format life.u.pv)]
+              ['ecash_received' (numb:enjs:format token-total.u.pv)]
+          ==
         %-  pairs:enjs:format
         :~  ['verified' b+%.n]
-            ['signer' s+signer-cord]
-            ['error' s+'signature does not match on-chain key']
+            ['signer' s+(scot %p signer.u.pv)]
+            ['error' s+error.u.pv]
         ==
+      ::  clean up completed verifications
+      =?  pending-verifies  !=(result.u.pv %pending)
+        (~(del by pending-verifies) vid)
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       ::
-      ::  GET /vitriol/check-id/~ship — check if @p has on-chain Groundwire ID
+      ::  GET /vitriol/check-id/~ship
       ::
         [%vitriol %check-id *]
       ?~  t.t.site.rl
@@ -258,6 +854,56 @@
         ==
       :_  this
       (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::
+      ::  POST /vitriol/ban — JSON API
+      ::
+        [%vitriol %ban ~]
+      ?.  =(meth %'POST')
+        =/  err=json  (pairs:enjs:format ['error' s+'POST required']~)
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server err))
+      =/  jon  (need (de:json:html q:(need body.request.req)))
+      =/  ship-cord  (so:dejs:format (~(got by ((om:dejs:format same) jon)) 'ship'))
+      =/  who  (slav %p ship-cord)
+      =/  result=json
+        %-  pairs:enjs:format
+        :~  ['banned' b+%.y]
+            ['ship' s+ship-cord]
+        ==
+      :_  this(banned (~(put in banned) who))
+      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::
+      ::  POST /vitriol/unban — JSON API
+      ::
+        [%vitriol %unban ~]
+      ?.  =(meth %'POST')
+        =/  err=json  (pairs:enjs:format ['error' s+'POST required']~)
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server err))
+      =/  jon  (need (de:json:html q:(need body.request.req)))
+      =/  ship-cord  (so:dejs:format (~(got by ((om:dejs:format same) jon)) 'ship'))
+      =/  who  (slav %p ship-cord)
+      =/  result=json
+        %-  pairs:enjs:format
+        :~  ['unbanned' b+%.y]
+            ['ship' s+ship-cord]
+        ==
+      :_  this(banned (~(del in banned) who))
+      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      ::
+      ::  GET /vitriol/banned — list all banned ships
+      ::
+        [%vitriol %banned ~]
+      =/  ships=(list @p)  ~(tap in banned)
+      =/  result=json
+        %-  pairs:enjs:format
+        :~  ['count' (numb:enjs:format (lent ships))]
+            :-  'ships'
+            :-  %a
+            (turn ships |=(s=@p s+(scot %p s)))
+        ==
+      :_  this
+      (give-simple-payload:app:server eyre-id (json-response:gen:server result))
     ==
   ==
 ::
@@ -283,6 +929,28 @@
         ['pass' s+(to-hex 130 pass.u.deed)]
         ['life' (numb:enjs:format life.u.deed)]
     ==
+  ::
+      [%x %ecash-pubkey %json ~]
+    :-  ~  :-  ~  :-  %json
+    !>  ^-  json
+    ?~  ecash-key
+      (pairs:enjs:format ['configured' b+%.n]~)
+    %-  pairs:enjs:format
+    :~  ['configured' b+%.y]
+        ['pubkey' s+(to-hex 64 pub.u.ecash-key)]
+        ['ship' s+(scot %p our.bowl)]
+    ==
+  ::
+      [%x %banned %json ~]
+    =/  ships=(list @p)  ~(tap in banned)
+    :-  ~  :-  ~  :-  %json
+    !>  ^-  json
+    %-  pairs:enjs:format
+    :~  ['count' (numb:enjs:format (lent ships))]
+        :-  'ships'
+        :-  %a
+        (turn ships |=(s=@p s+(scot %p s)))
+    ==
   ==
 ::
 ++  on-agent  on-agent:def
@@ -292,6 +960,447 @@
   ^-  (quip card _this)
   ?+  wire  (on-arvo:def wire sign-arvo)
     [%eyre *]  `this
+  ::
+  ::  -- Mint flow: fetch keyset list --
+  ::
+      [%iris %mint-keys @ ~]
+    =/  nonce=@t  i.t.t.wire
+    =/  pending  (~(get by pending-mints) nonce)
+    ?~  pending
+      `this
+    ?.  ?=([%iris %http-response *] sign-arvo)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  =client-response:iris  client-response.sign-arvo
+    ?.  ?=([%finished *] client-response)  `this
+    =/  response=response-header:http  response-header.client-response
+    =/  body=(unit octs)  ?~(full-file.client-response ~ `data.u.full-file.client-response)
+    ?.  =(200 status-code.response)
+      ~&  >>>  [%mint-keys-rejected status-code.response]
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ?~  body
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  resp-json  (de:json:html q.u.body)
+    ?~  resp-json
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  jon  u.resp-json
+    ?.  ?=([%o *] jon)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  ks  (~(get by p.jon) 'keysets')
+    ?~  ks
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ?.  ?=([%a *] u.ks)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ::  find first active keyset with unit=sat
+    =/  matching=(list @t)
+      %+  murn  p.u.ks
+      |=  item=json
+      ^-  (unit @t)
+      ?.  ?=([%o *] item)  ~
+      =/  active  (~(get by p.item) 'active')
+      =/  unit-val  (~(get by p.item) 'unit')
+      =/  id-val  (~(get by p.item) 'id')
+      ?.  ?=([~ %b *] active)  ~
+      ?.  =(%.y p.u.active)  ~
+      ?.  ?=([~ %s *] unit-val)  ~
+      ?.  =('sat' p.u.unit-val)  ~
+      ?~  id-val  ~
+      ?.  ?=([%s *] u.id-val)  ~
+      (some p.u.id-val)
+    =/  kid=@t  ?~(matching '' i.matching)
+    ?:  =('' kid)
+      ~&  >>>  %mint-no-active-keyset
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ::  fetch keys for this keyset
+    =.  pending-mints
+      (~(put by pending-mints) nonce u.pending(keyset-id kid, step %keyset))
+    =/  mint-clean=tape  (clean-mint-url:ca mint.u.pending)
+    =/  keys-url=@t  (crip ;:(weld mint-clean "/v1/keys/" (trip kid)))
+    :_  this
+    :~  [%pass /iris/mint-keyset/[nonce] %arvo %i %request [%'GET' keys-url ~ ~] *outbound-config:iris]
+    ==
+  ::
+  ::  -- Mint flow: fetch keyset keys --
+  ::
+      [%iris %mint-keyset @ ~]
+    =/  nonce=@t  i.t.t.wire
+    =/  pending  (~(get by pending-mints) nonce)
+    ?~  pending  `this
+    ?.  ?=([%iris %http-response *] sign-arvo)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  =client-response:iris  client-response.sign-arvo
+    ?.  ?=([%finished *] client-response)  `this
+    =/  response=response-header:http  response-header.client-response
+    =/  body=(unit octs)  ?~(full-file.client-response ~ `data.u.full-file.client-response)
+    ?.  =(200 status-code.response)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ?~  body
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  resp-json  (de:json:html q.u.body)
+    ?~  resp-json
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  jon  u.resp-json
+    ?.  ?=([%o *] jon)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  keys-val=(unit json)
+      =/  ks  (~(get by p.jon) 'keysets')
+      ?~  ks  (~(get by p.jon) 'keys')
+      ?.  ?=([%a *] u.ks)  (~(get by p.jon) 'keys')
+      =/  first  (snag 0 p.u.ks)
+      ?.  ?=([%o *] first)  (~(get by p.jon) 'keys')
+      (~(get by p.first) 'keys')
+    ?~  keys-val
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ?.  ?=([%o *] u.keys-val)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  key-map=(map @ud @t)
+      %-  ~(rep by p.u.keys-val)
+      |=  [[amt-key=@t hex-val=json] acc=(map @ud @t)]
+      ?.  ?=([%s *] hex-val)  acc
+      =/  amt=@ud  (roll (trip amt-key) |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
+      ?:  =(0 amt)  acc
+      (~(put by acc) amt p.hex-val)
+    =.  mint-keysets  (~(put by mint-keysets) keyset-id.u.pending key-map)
+    ::  now request mint quote
+    =.  pending-mints
+      (~(put by pending-mints) nonce u.pending(step %quote))
+    =/  quote-body=@t  (en:json:html (build-mint-quote-request:ca amount.u.pending 'sat'))
+    =/  quote-octs=octs  [(met 3 quote-body) quote-body]
+    =/  mint-clean=tape  (clean-mint-url:ca mint.u.pending)
+    =/  quote-url=@t  (crip (weld mint-clean "/v1/mint/quote/bolt11"))
+    :_  this
+    :~  [%pass /iris/mint-quote/[nonce] %arvo %i %request [%'POST' quote-url ~[['content-type' 'application/json']] `quote-octs] *outbound-config:iris]
+    ==
+  ::
+  ::  -- Mint flow: receive quote with invoice --
+  ::
+      [%iris %mint-quote @ ~]
+    =/  nonce=@t  i.t.t.wire
+    =/  pending  (~(get by pending-mints) nonce)
+    ?~  pending  `this
+    ?.  ?=([%iris %http-response *] sign-arvo)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  =client-response:iris  client-response.sign-arvo
+    ?.  ?=([%finished *] client-response)  `this
+    =/  response=response-header:http  response-header.client-response
+    =/  body=(unit octs)  ?~(full-file.client-response ~ `data.u.full-file.client-response)
+    ?.  =(200 status-code.response)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ?~  body
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  resp-json  (de:json:html q.u.body)
+    ?~  resp-json
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  quote-result  (parse-mint-quote:ca u.resp-json)
+    ?~  quote-result
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  expiry-da=@da  (add ~1970.1.1 (mul expiry.u.quote-result (bex 64)))
+    =.  pending-mints
+      %+  ~(put by pending-mints)  nonce
+      u.pending(quote-id quote.u.quote-result, bolt11 request.u.quote-result, expiry expiry-da, step %check-quote)
+    ::  start polling timer
+    :_  this
+    :~  [%pass /timer/mint/[nonce] %arvo %b %wait (add now.bowl ~s5)]
+    ==
+  ::
+  ::  -- Mint flow: poll quote status --
+  ::
+      [%iris %mint-check @ ~]
+    =/  nonce=@t  i.t.t.wire
+    =/  pending  (~(get by pending-mints) nonce)
+    ?~  pending  `this
+    ?.  ?=([%iris %http-response *] sign-arvo)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  =client-response:iris  client-response.sign-arvo
+    ?.  ?=([%finished *] client-response)  `this
+    =/  response=response-header:http  response-header.client-response
+    =/  body=(unit octs)  ?~(full-file.client-response ~ `data.u.full-file.client-response)
+    ?.  =(200 status-code.response)
+      :_  this
+      :~  [%pass /timer/mint/[nonce] %arvo %b %wait (add now.bowl ~s5)]
+      ==
+    ?~  body
+      :_  this
+      :~  [%pass /timer/mint/[nonce] %arvo %b %wait (add now.bowl ~s5)]
+      ==
+    =/  resp-json  (de:json:html q.u.body)
+    ?~  resp-json
+      :_  this
+      :~  [%pass /timer/mint/[nonce] %arvo %b %wait (add now.bowl ~s5)]
+      ==
+    =/  quote-result  (parse-mint-quote:ca u.resp-json)
+    ?~  quote-result
+      :_  this
+      :~  [%pass /timer/mint/[nonce] %arvo %b %wait (add now.bowl ~s5)]
+      ==
+    ?:  =(state.u.quote-result 'PAID')
+      ::  invoice paid — generate blinded outputs and mint tokens
+      =/  amounts=(list @ud)  (split-amount:ca amount.u.pending)
+      =/  idx=@ud  0
+      =/  secrets=(list @t)  ~
+      =/  bfactors=(list @)  ~
+      =/  mint-outputs=(list [amount=@ud id=@t b-hex=@t])  ~
+      |-  ^-  (quip card _this)
+      ?:  (gte idx (lent amounts))
+        ::  all outputs generated, send mint request
+        =/  mint-req=json  (build-mint-request:ca quote-id.u.pending (flop mint-outputs))
+        =/  mint-body=@t  (en:json:html mint-req)
+        =/  mint-octs=octs  [(met 3 mint-body) mint-body]
+        =/  mint-clean=tape  (clean-mint-url:ca mint.u.pending)
+        =/  mint-url=@t  (crip (weld mint-clean "/v1/mint/bolt11"))
+        =.  pending-mints
+          (~(put by pending-mints) nonce u.pending(step %mint-tokens, secrets (flop secrets), blinding-factors (flop bfactors)))
+        :_  this
+        :~  [%pass /iris/mint-exec/[nonce] %arvo %i %request [%'POST' mint-url ~[['content-type' 'application/json']] `mint-octs] *outbound-config:iris]
+        ==
+      =/  amt=@ud  (snag idx amounts)
+      =/  eny-seed=@  (sham [eny.bowl nonce idx now.bowl])
+      =/  [b-hex=@t secret=@t blinding-factor=@]  (make-output:ca amt keyset-id.u.pending eny-seed)
+      %=  $
+        idx  +(idx)
+        secrets  [secret secrets]
+        bfactors  [blinding-factor bfactors]
+        mint-outputs  [[amt keyset-id.u.pending b-hex] mint-outputs]
+      ==
+    ::  not paid yet — schedule another check
+    :_  this
+    :~  [%pass /timer/mint/[nonce] %arvo %b %wait (add now.bowl ~s5)]
+    ==
+  ::
+  ::  -- Mint flow: receive minted tokens --
+  ::
+      [%iris %mint-exec @ ~]
+    =/  nonce=@t  i.t.t.wire
+    =/  pending  (~(get by pending-mints) nonce)
+    ?~  pending  `this
+    ?.  ?=([%iris %http-response *] sign-arvo)
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  =client-response:iris  client-response.sign-arvo
+    ?.  ?=([%finished *] client-response)  `this
+    =/  response=response-header:http  response-header.client-response
+    =/  body=(unit octs)  ?~(full-file.client-response ~ `data.u.full-file.client-response)
+    ?.  =(200 status-code.response)
+      ~&  >>>  [%mint-exec-rejected status-code.response]
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ?~  body
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    =/  resp-json  (de:json:html q.u.body)
+    ?~  resp-json
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ::  parse signatures and unblind
+    =/  sigs  (parse-swap-response:ca u.resp-json)
+    =/  key-map=(map @ud @t)  (~(gut by mint-keysets) keyset-id.u.pending *(map @ud @t))
+    =/  mint-keys=(map @ud [x=@ y=@])
+      %-  ~(run by key-map)
+      |=  hex=@t
+      =/  result  (mule |.((hex-to-point:ca hex)))
+      ?:(?=([%& *] result) p.result [0 0])
+    =/  new-proofs=(list cashu-proof)
+      %:  finalize-proofs:ca
+        sigs
+        secrets.u.pending
+        blinding-factors.u.pending
+        mint-keys
+      ==
+    ::  add proofs to wallet
+    =/  existing-proofs=(list cashu-proof)  (~(gut by wallet) mint.u.pending ~)
+    =.  wallet  (~(put by wallet) mint.u.pending (weld existing-proofs new-proofs))
+    =.  pending-mints  (~(del by pending-mints) nonce)
+    ~&  >  [%mint-success (lent new-proofs) %proofs]
+    `this
+  ::
+  ::  -- Mint flow: timer fires to poll --
+  ::
+      [%timer %mint @ ~]
+    =/  nonce=@t  i.t.t.wire
+    =/  pending  (~(get by pending-mints) nonce)
+    ?~  pending  `this
+    ?.  ?=([%behn %wake *] sign-arvo)  `this
+    ::  check if expired
+    ?:  &(!=(expiry.u.pending *@da) (gth now.bowl expiry.u.pending))
+      ~&  >>>  %mint-quote-expired
+      =.  pending-mints  (~(del by pending-mints) nonce)
+      `this
+    ::  poll quote status
+    =/  mint-clean=tape  (clean-mint-url:ca mint.u.pending)
+    =/  check-url=@t  (crip ;:(weld mint-clean "/v1/mint/quote/bolt11/" (trip quote-id.u.pending)))
+    :_  this
+    :~  [%pass /iris/mint-check/[nonce] %arvo %i %request [%'GET' check-url ~ ~] *outbound-config:iris]
+    ==
+  ::
+  ::  -- Verify flow: fetch keyset keys for swap --
+  ::
+      [%iris %verify-keys @ ~]
+    =/  vid=@t  i.t.t.wire
+    =/  pv  (~(get by pending-verifies) vid)
+    ?~  pv  `this
+    ?.  ?=([%iris %http-response *] sign-arvo)
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'keyset fetch failed'))
+      `this
+    =/  =client-response:iris  client-response.sign-arvo
+    ?.  ?=([%finished *] client-response)  `this
+    =/  response=response-header:http  response-header.client-response
+    =/  body=(unit octs)  ?~(full-file.client-response ~ `data.u.full-file.client-response)
+    ?.  =(200 status-code.response)
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'mint keyset request rejected'))
+      `this
+    ?~  body
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'empty keyset response'))
+      `this
+    =/  resp-json  (de:json:html q.u.body)
+    ?~  resp-json
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'invalid keyset json'))
+      `this
+    ::  parse keys — try both /v1/keys/{id} and /v1/keysets formats
+    =/  jon  u.resp-json
+    ?.  ?=([%o *] jon)
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'keyset not an object'))
+      `this
+    =/  keys-val=(unit json)
+      =/  ks  (~(get by p.jon) 'keysets')
+      ?~  ks  (~(get by p.jon) 'keys')
+      ?.  ?=([%a *] u.ks)  (~(get by p.jon) 'keys')
+      =/  first  (snag 0 p.u.ks)
+      ?.  ?=([%o *] first)  (~(get by p.jon) 'keys')
+      (~(get by p.first) 'keys')
+    ?~  keys-val
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'no keys in response'))
+      `this
+    ?.  ?=([%o *] u.keys-val)
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'keys not an object'))
+      `this
+    =/  key-map=(map @ud @t)
+      %-  ~(rep by p.u.keys-val)
+      |=  [[amt-key=@t hex-val=json] acc=(map @ud @t)]
+      ?.  ?=([%s *] hex-val)  acc
+      =/  amt=@ud  (roll (trip amt-key) |=([c=@ a=@ud] (add (mul a 10) (sub c '0'))))
+      ?:  =(0 amt)  acc
+      (~(put by acc) amt p.hex-val)
+    =.  mint-keysets  (~(put by mint-keysets) keyset-id.u.pv key-map)
+    ::  build swap request: create fresh outputs for each input proof
+    =/  amounts=(list @ud)  (turn tokens.u.pv |=(p=cashu-proof amount.p))
+    =/  idx=@ud  0
+    =/  secrets=(list @t)  ~
+    =/  bfactors=(list @)  ~
+    =/  outputs=(list [amount=@ud id=@t b-hex=@t])  ~
+    |-  ^-  (quip card _this)
+    ?:  (gte idx (lent amounts))
+      ::  build swap JSON
+      =/  inputs-json=json
+        :-  %a
+        %+  turn  tokens.u.pv
+        |=  p=cashu-proof
+        %-  pairs:enjs:format
+        :~  ['amount' (numb:enjs:format amount.p)]
+            ['id' s+id.p]
+            ['secret' s+secret.p]
+            ['C' s+c.p]
+        ==
+      =/  swap-req=json
+        (build-swap-request:ca inputs-json (flop outputs))
+      =/  swap-body=@t  (en:json:html swap-req)
+      =/  swap-octs=octs  [(met 3 swap-body) swap-body]
+      =/  mint-clean=tape  (clean-mint-url:ca mint.u.pv)
+      =/  swap-url=@t  (crip (weld mint-clean "/v1/swap"))
+      =.  pending-verifies
+        %+  ~(put by pending-verifies)  vid
+        u.pv(step %swap, secrets (flop secrets), blinding-factors (flop bfactors))
+      :_  this
+      :~  [%pass /iris/verify-swap/[vid] %arvo %i %request [%'POST' swap-url ~[['content-type' 'application/json']] `swap-octs] *outbound-config:iris]
+      ==
+    =/  amt=@ud  (snag idx amounts)
+    =/  eny-seed=@  (sham [eny.bowl vid idx now.bowl])
+    =/  [b-hex=@t secret=@t blinding-factor=@]  (make-output:ca amt keyset-id.u.pv eny-seed)
+    %=  $
+      idx  +(idx)
+      secrets  [secret secrets]
+      bfactors  [blinding-factor bfactors]
+      outputs  [[amt keyset-id.u.pv b-hex] outputs]
+    ==
+  ::
+  ::  -- Verify flow: receive swap result --
+  ::
+      [%iris %verify-swap @ ~]
+    =/  vid=@t  i.t.t.wire
+    =/  pv  (~(get by pending-verifies) vid)
+    ?~  pv  `this
+    ?.  ?=([%iris %http-response *] sign-arvo)
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'swap request failed'))
+      `this
+    =/  =client-response:iris  client-response.sign-arvo
+    ?.  ?=([%finished *] client-response)  `this
+    =/  response=response-header:http  response-header.client-response
+    =/  body=(unit octs)  ?~(full-file.client-response ~ `data.u.full-file.client-response)
+    ?.  =(200 status-code.response)
+      =/  err-body=@t
+        ?~  body  'no body'
+        (crip (scag 200 (trip q.u.body)))
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error (crip ;:(weld "swap rejected: " (trip err-body)))))
+      `this
+    ?~  body
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'empty swap response'))
+      `this
+    =/  resp-json  (de:json:html q.u.body)
+    ?~  resp-json
+      =.  pending-verifies
+        (~(put by pending-verifies) vid u.pv(result %failed, error 'invalid swap json'))
+      `this
+    ::  parse signatures and unblind
+    =/  sigs  (parse-swap-response:ca u.resp-json)
+    =/  key-map=(map @ud @t)  (~(gut by mint-keysets) keyset-id.u.pv *(map @ud @t))
+    =/  mint-keys=(map @ud [x=@ y=@])
+      %-  ~(run by key-map)
+      |=  hex=@t
+      =/  result  (mule |.((hex-to-point:ca hex)))
+      ?:(?=([%& *] result) p.result [0 0])
+    =/  new-proofs=(list cashu-proof)
+      %:  finalize-proofs:ca
+        sigs
+        secrets.u.pv
+        blinding-factors.u.pv
+        mint-keys
+      ==
+    ::  swap succeeded — tokens are real, store them in wallet
+    =/  existing=(list cashu-proof)  (~(gut by wallet) mint.u.pv ~)
+    =.  wallet  (~(put by wallet) mint.u.pv (weld existing new-proofs))
+    =.  pending-verifies
+      (~(put by pending-verifies) vid u.pv(result %verified))
+    ~&  >  [%verify-swap-success (lent new-proofs) %proofs token-total.u.pv %sats]
+    `this
   ==
 ++  on-fail   on-fail:def
 --

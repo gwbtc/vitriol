@@ -9,17 +9,20 @@
 #
 # This script:
 #   1. Reads the commit content from stdin
-#   2. Sends it to the committer's Groundwire ship for signing
-#   3. Returns a structured signature block on stdout
-#   4. Emits GPG-compatible status on fd 2
+#   2. Optionally fetches the maintainer's ecash pubkey and sats-per-pr price
+#   3. Sends content (+ sats_required if applicable) to the committer's ship
+#   4. Returns a structured signature block on stdout
+#   5. Emits GPG-compatible status on fd 2
 #
 # The signature block includes the signer's @p so the CI verifier can
 # look up the identity on-chain via its own ship, rather than trusting
 # the committer's self-reported pubkey.
 #
 # Configuration (git config or env vars):
-#   GROUNDWIRE_SIGN_ENDPOINT  — base URL of the committer's ship (e.g. http://localhost:8080/vitriol)
-#   GROUNDWIRE_SIGN_TOKEN     — auth cookie for the ship
+#   GROUNDWIRE_SIGN_ENDPOINT       — base URL of the committer's ship (e.g. http://localhost:8080/vitriol)
+#   GROUNDWIRE_SIGN_TOKEN          — auth cookie for the ship
+#   GROUNDWIRE_MAINTAINER_ENDPOINT — (optional) base URL of the maintainer's ship for ecash pubkey
+#   GROUNDWIRE_MAINTAINER_TOKEN    — (optional) auth cookie for the maintainer's ship
 #
 # Install:
 #   git config --global gpg.program /path/to/groundwire-sign
@@ -32,6 +35,8 @@ set -euo pipefail
 
 ENDPOINT="${GROUNDWIRE_SIGN_ENDPOINT:-$(git config --get groundwire.sign-endpoint 2>/dev/null || echo "")}"
 TOKEN="${GROUNDWIRE_SIGN_TOKEN:-$(git config --get groundwire.sign-token 2>/dev/null || echo "")}"
+MAINTAINER_ENDPOINT="${GROUNDWIRE_MAINTAINER_ENDPOINT:-$(git config --get groundwire.maintainer-endpoint 2>/dev/null || echo "")}"
+MAINTAINER_TOKEN="${GROUNDWIRE_MAINTAINER_TOKEN:-$(git config --get groundwire.maintainer-token 2>/dev/null || echo "")}"
 
 if [ -z "$ENDPOINT" ]; then
   echo "groundwire-sign: GROUNDWIRE_SIGN_ENDPOINT not set" >&2
@@ -68,12 +73,55 @@ done
 
 COMMIT_CONTENT=$(cat)
 
+# --- Fetch maintainer's ecash pubkey and price (optional) --------------------
+
+ECASH_PUBKEY=""
+SATS_REQUIRED=""
+
+if [ -n "$MAINTAINER_ENDPOINT" ]; then
+  # Fetch ecash pubkey
+  ECASH_RESPONSE=$(curl -s -f \
+    -H "Cookie: ${MAINTAINER_TOKEN}" \
+    "${MAINTAINER_ENDPOINT}/ecash-pubkey") || {
+    echo "groundwire-sign: warning: could not fetch maintainer ecash pubkey" >&2
+  }
+  if [ -n "$ECASH_RESPONSE" ]; then
+    ECASH_CONFIGURED=$(echo "$ECASH_RESPONSE" | jq -r '.configured // empty')
+    if [ "$ECASH_CONFIGURED" = "true" ]; then
+      ECASH_PUBKEY=$(echo "$ECASH_RESPONSE" | jq -r '.pubkey // empty')
+    else
+      echo "groundwire-sign: warning: maintainer ecash not configured" >&2
+    fi
+  fi
+
+  # Fetch sats-per-pr price
+  PRICE_RESPONSE=$(curl -s -f \
+    -H "Cookie: ${MAINTAINER_TOKEN}" \
+    "${MAINTAINER_ENDPOINT}/sats-per-pr") || {
+    echo "groundwire-sign: warning: could not fetch maintainer price" >&2
+  }
+  if [ -n "$PRICE_RESPONSE" ]; then
+    PRICE_CONFIGURED=$(echo "$PRICE_RESPONSE" | jq -r '.configured // empty')
+    if [ "$PRICE_CONFIGURED" = "true" ]; then
+      SATS_REQUIRED=$(echo "$PRICE_RESPONSE" | jq -r '.sats // empty')
+    fi
+  fi
+fi
+
 # --- Send to signing service --------------------------------------------------
 
-PAYLOAD=$(jq -n \
-  --arg content "$COMMIT_CONTENT" \
-  --arg key_id "$KEY_ID" \
-  '{content: $content, key_id: $key_id}')
+if [ -n "$SATS_REQUIRED" ] && [ "$SATS_REQUIRED" != "0" ]; then
+  PAYLOAD=$(jq -n \
+    --arg content "$COMMIT_CONTENT" \
+    --arg key_id "$KEY_ID" \
+    --argjson sats "$SATS_REQUIRED" \
+    '{content: $content, key_id: $key_id, sats_required: $sats}')
+else
+  PAYLOAD=$(jq -n \
+    --arg content "$COMMIT_CONTENT" \
+    --arg key_id "$KEY_ID" \
+    '{content: $content, key_id: $key_id}')
+fi
 
 RESPONSE=$(curl -s -f \
   -X POST \
@@ -85,9 +133,18 @@ RESPONSE=$(curl -s -f \
   exit 1
 }
 
+# Check for error in response (e.g. insufficient balance)
+ERROR=$(echo "$RESPONSE" | jq -r '.error // empty')
+if [ -n "$ERROR" ]; then
+  echo "groundwire-sign: $ERROR" >&2
+  exit 1
+fi
+
 SIGNATURE=$(echo "$RESPONSE" | jq -r '.signature // empty')
 SIGNER_ID=$(echo "$RESPONSE" | jq -r '.signer_id // empty')
 PASS=$(echo "$RESPONSE" | jq -r '.pass // empty')
+ECASH_TOKENS=$(echo "$RESPONSE" | jq -r '.ecash_tokens // empty')
+ECASH_AMOUNT=$(echo "$RESPONSE" | jq -r '.ecash_amount // empty')
 
 if [ -z "$SIGNATURE" ]; then
   echo "groundwire-sign: no signature in response" >&2
@@ -103,13 +160,18 @@ fi
 # Git captures this verbatim as the gpgsig header.
 # The CI verifier parses this to extract the signer's @p and signature.
 
-cat <<GWSIG
------BEGIN GROUNDWIRE SIGNATURE-----
-signer:${SIGNER_ID}
-pass:${PASS}
-sig:${SIGNATURE}
------END GROUNDWIRE SIGNATURE-----
-GWSIG
+{
+  echo "-----BEGIN GROUNDWIRE SIGNATURE-----"
+  echo "signer:${SIGNER_ID}"
+  echo "pass:${PASS}"
+  echo "sig:${SIGNATURE}"
+  [ -n "$ECASH_PUBKEY" ] && echo "ecash-pubkey:${ECASH_PUBKEY}"
+  if [ -n "$ECASH_TOKENS" ] && [ "$ECASH_TOKENS" != "null" ]; then
+    echo "ecash-amount:${ECASH_AMOUNT}"
+    echo "ecash-tokens:$(echo "$ECASH_TOKENS" | jq -c '.')"
+  fi
+  echo "-----END GROUNDWIRE SIGNATURE-----"
+}
 
 # --- Emit GPG-compatible status on status-fd ----------------------------------
 
