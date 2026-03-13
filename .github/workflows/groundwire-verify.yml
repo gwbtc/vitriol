@@ -86,7 +86,6 @@ jobs:
             ECASH_EPH_PUBKEY=$(echo "$SIG_BLOCK" | grep '^ecash-ephemeral-pubkey:' | cut -d: -f2)
             ECASH_TOKENS=$(echo "$SIG_BLOCK" | grep '^ecash-tokens:' | cut -d: -f2-)
             ECASH_AMOUNT=$(echo "$SIG_BLOCK" | grep '^ecash-amount:' | cut -d: -f2)
-            MINT_URL=$(echo "$SIG_BLOCK" | grep '^mint:' | cut -d: -f2-)
 
             # --- Send to CI's Groundwire ship for full verification ---
             # The ship checks:
@@ -105,7 +104,6 @@ jobs:
             fi
 
             [ -n "$ECASH_AMOUNT" ] && { VERIFY_ARGS+=(--argjson ecash_amount "$ECASH_AMOUNT"); VERIFY_EXPR+=', ecash_amount: $ecash_amount'; }
-            [ -n "$MINT_URL" ] && { VERIFY_ARGS+=(--arg mint "$MINT_URL"); VERIFY_EXPR+=', mint: $mint'; }
 
             VERIFY_EXPR+='}'
 
