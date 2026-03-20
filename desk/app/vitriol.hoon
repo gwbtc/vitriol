@@ -151,8 +151,16 @@
     ?:  &((gte c '0') (lte c '9'))  (sub c '0')
     ?:  &((gte c 'a') (lte c 'f'))  (add 10 (sub c 'a'))
     ?:  &((gte c 'A') (lte c 'F'))  (add 10 (sub c 'A'))
-    !!
+    0
   $(chars t.chars, i +(i), val (add val (lsh [2 i] nib)))
+::
+++  from-hex-safe
+  |=  hex=@t
+  ^-  (unit @)
+  =/  chars  (trip hex)
+  ?.  (levy chars |=(c=@ |(&((gte c '0') (lte c '9')) &((gte c 'a') (lte c 'f')) &((gte c 'A') (lte c 'F')))))
+    ~
+  `(from-hex hex)
 ::
 ++  deed-safe
   |=  [=bowl:gall who=@p]
@@ -252,6 +260,18 @@
   =/  matches  (skim pairs |=([k=@t *] =(k field)))
   ?~  matches  ~
   `+.i.matches
+::
+++  require-body
+  |=  req=inbound-request:eyre
+  ^-  (unit @t)
+  ?~  body.request.req  ~
+  `(crip (trip q.u.body.request.req))
+::
+++  require-json-body
+  |=  req=inbound-request:eyre
+  ^-  (unit json)
+  ?~  body.request.req  ~
+  (de:json:html q.u.body.request.req)
 ::
 ++  parse-ud
   |=  txt=@t
@@ -393,8 +413,18 @@
   =/  empty-verifies  *(map @t pending-verify)
   =/  empty-flights  *(map @t [proofs=(list cashu-proof) mint=@t expiry=@da])
   =/  empty-melts  *(map @t pending-melt)
+  ::  re-arm in-flight timers on load
+  =/  re-arm-flights
+    |=  flights=(map @t [proofs=(list cashu-proof) mint=@t expiry=@da])
+    ^-  (list card)
+    %+  turn  ~(tap by flights)
+    |=  [fid=@t *]
+    ^-  card
+    [%pass /timer/in-flight/[fid] %arvo %b %wait (add now.bowl ~m1)]
   ?-  -.old
-    %9  [~[eyre-card] this(state old)]
+    %9
+      =/  flight-cards  (re-arm-flights in-flight.old)
+      [(weld ~[eyre-card] flight-cards) this(state old)]
     %8
       :_  %=  this
             ecash-key       ecash-key.old
@@ -601,8 +631,11 @@
       ?.  =(meth %'POST')
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  body=@t  (crip (trip q:(need body.request.req)))
-      =/  pairs  (rush body yquy:de-purl:html)
+      =/  body  (require-body req)
+      ?~  body
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  pairs  (rush u.body yquy:de-purl:html)
       ?~  pairs
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
@@ -623,8 +656,11 @@
       ?.  =(meth %'POST')
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  body=@t  (crip (trip q:(need body.request.req)))
-      =/  pairs  (rush body yquy:de-purl:html)
+      =/  body  (require-body req)
+      ?~  body
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  pairs  (rush u.body yquy:de-purl:html)
       ?~  pairs
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
@@ -657,8 +693,11 @@
       ?.  =(meth %'POST')
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  body=@t  (crip (trip q:(need body.request.req)))
-      =/  pairs  (rush body yquy:de-purl:html)
+      =/  body  (require-body req)
+      ?~  body
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  pairs  (rush u.body yquy:de-purl:html)
       ?~  pairs
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
@@ -682,8 +721,11 @@
       ?.  =(meth %'POST')
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  body=@t  (crip (trip q:(need body.request.req)))
-      =/  pairs  (rush body yquy:de-purl:html)
+      =/  body  (require-body req)
+      ?~  body
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  pairs  (rush u.body yquy:de-purl:html)
       ?~  pairs
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
@@ -725,8 +767,11 @@
       ?.  =(meth %'POST')
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  body=@t  (crip (trip q:(need body.request.req)))
-      =/  pairs  (rush body yquy:de-purl:html)
+      =/  body  (require-body req)
+      ?~  body
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  pairs  (rush u.body yquy:de-purl:html)
       ?~  pairs
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
@@ -749,8 +794,11 @@
       ?~  mint
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
-      =/  body=@t  (crip (trip q:(need body.request.req)))
-      =/  pairs  (rush body yquy:de-purl:html)
+      =/  body  (require-body req)
+      ?~  body
+        :_  this
+        (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      =/  pairs  (rush u.body yquy:de-purl:html)
       ?~  pairs
         :_  this
         (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
@@ -861,8 +909,12 @@
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
       =/  sgn-seed  (end 8 (rsh 3 u.ring))
-      =/  jon  (need (de:json:html q:(need body.request.req)))
-      =/  fields  ((om:dejs:format same) jon)
+      =/  jon  (require-json-body req)
+      ?~  jon
+        =/  err=json  (pairs:enjs:format ['error' s+'request body required']~)
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server err))
+      =/  fields  ((om:dejs:format same) u.jon)
       =/  content  (so:dejs:format (~(got by fields) 'content'))
       =/  msg=octs  [(met 3 content) content]
       =/  sig=@  (sign-octs:ed:crypto msg sgn-seed)
@@ -914,7 +966,7 @@
         ?~  rp  ~
         ?.  ?=([%s *] u.rp)  ~
         ?:  =('' p.u.rp)  ~
-        `(from-hex p.u.rp)
+        (from-hex-safe p.u.rp)
       ::  build token payload — include mint URL in encrypted data
       =/  token-payload=@t
         %-  en:json:html
@@ -975,8 +1027,12 @@
         =/  err=json  (pairs:enjs:format ['error' s+'POST required']~)
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server err))
-      =/  jon  (need (de:json:html q:(need body.request.req)))
-      =/  fields  ((om:dejs:format same) jon)
+      =/  jon  (require-json-body req)
+      ?~  jon
+        =/  err=json  (pairs:enjs:format ['error' s+'request body required']~)
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server err))
+      =/  fields  ((om:dejs:format same) u.jon)
       =/  signer-cord  (so:dejs:format (~(got by fields) 'signer'))
       =/  sig-hex      (so:dejs:format (~(got by fields) 'signature'))
       =/  payload       (so:dejs:format (~(got by fields) 'payload'))
@@ -1020,7 +1076,17 @@
         :_  this
         (give-simple-payload:app:server eyre-id (json-response:gen:server result))
       =/  sgn-pub  (end 8 (rsh 3 pass.u.deed))
-      =/  sig=@  (from-hex sig-hex)
+      =/  sig-unit  (from-hex-safe sig-hex)
+      ?~  sig-unit
+        =/  result=json
+          %-  pairs:enjs:format
+          :~  ['verified' b+%.n]
+              ['signer' s+signer-cord]
+              ['error' s+'invalid signature hex']
+          ==
+        :_  this
+        (give-simple-payload:app:server eyre-id (json-response:gen:server result))
+      =/  sig=@  u.sig-unit
       =/  msg=octs  [(met 3 payload) payload]
       =/  valid=?  (veri-octs:ed:crypto sig msg sgn-pub)
       ?.  valid
@@ -1042,10 +1108,14 @@
         ?:  &(?=(^ ct-hex) ?=(^ eph-hex) ?=(^ mac-hex) ?=([%s *] u.ct-hex) ?=([%s *] u.eph-hex) ?=([%s *] u.mac-hex))
           ::  decrypt using our ecash secret key
           ?~  ecash-key  [~ '']
-          =/  ct=@  (from-hex p.u.ct-hex)
+          =/  ct-unit  (from-hex-safe p.u.ct-hex)
+          =/  eph-unit  (from-hex-safe p.u.eph-hex)
+          =/  mac-unit  (from-hex-safe p.u.mac-hex)
+          ?:  |(?=(~ ct-unit) ?=(~ eph-unit) ?=(~ mac-unit))  [~ '']
+          =/  ct=@  u.ct-unit
           =/  ct-len=@ud  (div (lent (trip p.u.ct-hex)) 2)
-          =/  eph-pub=@  (from-hex p.u.eph-hex)
-          =/  mac=@  (from-hex p.u.mac-hex)
+          =/  eph-pub=@  u.eph-unit
+          =/  mac=@  u.mac-unit
           =/  plaintext  (ecash-decrypt ct ct-len eph-pub sec.u.ecash-key mac)
           ?~  plaintext  [~ '']
           =/  payload-json  (de:json:html u.plaintext)
