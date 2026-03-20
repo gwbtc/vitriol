@@ -177,6 +177,7 @@
           banned=(set @p)
           require-payment=?
           sats-per-pr=(unit @ud)
+          public-verify=?
           mint=(unit @t)
           wallet=(map @t (list cashu-proof))
           pending-mints=(map @t pending-mint-quote)
@@ -265,6 +266,20 @@
               ;label: encryption public key (for receiving ecash)
               ;div.val: {(trip (to-hex 64 pub.u.ecash-key))}
             ==
+      ==
+      ;section
+        ;h2: public verification
+        ;div.toggle-form
+          ;span
+            ;+  ?:  public-verify
+                  ;span.status.status-on: enabled
+                ;span.status.status-off: disabled
+          ==
+          ;form(method "POST", action "/vitriol/admin/toggle-public-verify")
+            ;input(type "submit", value ?:(public-verify "Disable" "Enable"));
+          ==
+        ==
+        ;p: when enabled, /vitriol/verify-commit, /vitriol/verify-status, /vitriol/sats-per-pr, and /vitriol/ecash-pubkey are accessible without authentication. this allows other repos to use your ship for CI verification without needing an auth cookie.
       ==
       ;section
         ;h2: received tokens

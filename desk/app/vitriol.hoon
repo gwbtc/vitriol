@@ -34,6 +34,7 @@
       state-6
       state-7
       state-8
+      state-9
   ==
 +$  state-0
   $:  %0
@@ -101,6 +102,21 @@
       banned=(set @p)
       require-payment=?
       sats-per-pr=(unit @ud)
+      mint=(unit @t)
+      wallet=(map @t (list cashu-proof))
+      mint-keysets=(map @t (map @ud @t))
+      pending-mints=(map @t pending-mint-quote)
+      pending-verifies=(map @t pending-verify)
+      in-flight=(map @t [proofs=(list cashu-proof) mint=@t expiry=@da])
+      pending-melts=(map @t pending-melt)
+  ==
++$  state-9
+  $:  %9
+      ecash-key=(unit [sec=@ pub=@])
+      banned=(set @p)
+      require-payment=?
+      sats-per-pr=(unit @ud)
+      public-verify=?
       mint=(unit @t)
       wallet=(map @t (list cashu-proof))
       mint-keysets=(map @t (map @ud @t))
@@ -338,7 +354,7 @@
   $(to-remove t.to-remove)
 --
 ^-  agent:gall
-=|  state-8
+=|  state-9
 =*  state  -
 |_  =bowl:gall
 +*  this  .
@@ -352,6 +368,7 @@
         banned          *(set @p)
         require-payment  %.n
         sats-per-pr     ~
+        public-verify   %.n
         mint            ~
         wallet          *(map @t (list cashu-proof))
         mint-keysets    *(map @t (map @ud @t))
@@ -377,13 +394,30 @@
   =/  empty-flights  *(map @t [proofs=(list cashu-proof) mint=@t expiry=@da])
   =/  empty-melts  *(map @t pending-melt)
   ?-  -.old
-    %8  [~[eyre-card] this(state old)]
+    %9  [~[eyre-card] this(state old)]
+    %8
+      :_  %=  this
+            ecash-key       ecash-key.old
+            banned          banned.old
+            require-payment  require-payment.old
+            sats-per-pr     sats-per-pr.old
+            public-verify   %.n
+            mint            mint.old
+            wallet          wallet.old
+            mint-keysets    mint-keysets.old
+            pending-mints   pending-mints.old
+            pending-verifies  pending-verifies.old
+            in-flight       in-flight.old
+            pending-melts   pending-melts.old
+          ==
+      ~[eyre-card]
     %7
       :_  %=  this
             ecash-key       ecash-key.old
             banned          banned.old
             require-payment  require-payment.old
             sats-per-pr     sats-per-pr.old
+            public-verify   %.n
             mint            mint.old
             wallet          wallet.old
             mint-keysets    mint-keysets.old
@@ -399,6 +433,7 @@
             banned          banned.old
             require-payment  require-payment.old
             sats-per-pr     sats-per-pr.old
+            public-verify   %.n
             mint            mint.old
             wallet          wallet.old
             mint-keysets    mint-keysets.old
@@ -414,6 +449,7 @@
             banned          banned.old
             require-payment  require-payment.old
             sats-per-pr     ~
+            public-verify   %.n
             mint            mint.old
             wallet          wallet.old
             mint-keysets    mint-keysets.old
@@ -429,6 +465,7 @@
             banned          banned.old
             require-payment  require-payment.old
             sats-per-pr     ~
+            public-verify   %.n
             mint            ~
             wallet          empty-wallet
             mint-keysets    empty-keysets
@@ -444,6 +481,7 @@
             banned          banned.old
             require-payment  %.n
             sats-per-pr     ~
+            public-verify   %.n
             mint            ~
             wallet          empty-wallet
             mint-keysets    empty-keysets
@@ -459,6 +497,7 @@
             banned          *(set @p)
             require-payment  %.n
             sats-per-pr     ~
+            public-verify   %.n
             mint            ~
             wallet          empty-wallet
             mint-keysets    empty-keysets
@@ -475,6 +514,7 @@
             banned          *(set @p)
             require-payment  %.n
             sats-per-pr     ~
+            public-verify   %.n
             mint            ~
             wallet          empty-wallet
             mint-keysets    empty-keysets
@@ -491,6 +531,7 @@
             banned          *(set @p)
             require-payment  %.n
             sats-per-pr     ~
+            public-verify   %.n
             mint            ~
             wallet          empty-wallet
             mint-keysets    empty-keysets
@@ -509,11 +550,20 @@
       %handle-http-request
     =/  [eyre-id=@ta req=inbound-request:eyre]
       !<([@ta inbound-request:eyre] vase)
-    ?.  authenticated.req
-      :_  this
-      (give-simple-payload:app:server eyre-id [[403 ~] ~])
     =/  rl  (parse-request-line:server url.request.req)
     =/  meth  method.request.req
+    ::  allow public access to verify endpoints when public-verify is on
+    =/  is-public-endpoint=?
+      ?&  public-verify
+          ?|  =([%vitriol %verify-commit ~] site.rl)
+              ?=([%vitriol %verify-status *] site.rl)
+              =([%vitriol %sats-per-pr ~] site.rl)
+              =([%vitriol %ecash-pubkey ~] site.rl)
+          ==
+      ==
+    ?.  |(authenticated.req is-public-endpoint)
+      :_  this
+      (give-simple-payload:app:server eyre-id [[403 ~] ~])
     ?+  site.rl
       :_  this
       (give-simple-payload:app:server eyre-id not-found:gen:server)
@@ -536,6 +586,7 @@
           banned
           require-payment
           sats-per-pr
+          public-verify
           mint
           wallet
           pending-mints
@@ -592,6 +643,12 @@
       ::
         [%vitriol %admin %toggle-payment ~]
       :_  this(require-payment !require-payment)
+      (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
+      ::
+      ::  POST /vitriol/admin/toggle-public-verify — toggle public verification
+      ::
+        [%vitriol %admin %toggle-public-verify ~]
+      :_  this(public-verify !public-verify)
       (redirect-response:vitriol-ui eyre-id '/vitriol/admin')
       ::
       ::  POST /vitriol/admin/set-price — set sats per PR
