@@ -1,0 +1,1 @@
+:: test\n|%\n++  foo\n  '''\n  hello world\n  '''\n--\n
