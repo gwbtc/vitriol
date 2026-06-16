@@ -1,5 +1,5 @@
 # build
-.peru
+.zig-cache
 dist
 dist-dev
 
