@@ -172,11 +172,16 @@ jobs:
       - name: Gate PR on verification
         if: steps.verify.outputs.verified != 'true'
         run: |
-          echo "::error::This PR contains commits not signed by a recognized Groundwire ID."
+          if grep -Eq '^(UNSIGNED|NOT_GROUNDWIRE) ' /tmp/verification-results.txt; then
+            echo "::error::This PR contains commits without Groundwire signatures."
+          elif grep -Eq '^UNREACHABLE ' /tmp/verification-results.txt; then
+            echo "::error::Groundwire verification could not complete because the CI verifier node was unreachable."
+          else
+            echo "::error::This PR contains commits that failed Groundwire verification."
+          fi
           echo ""
           cat /tmp/verification-results.txt
           echo ""
-          echo "Contributors must sign commits with a Groundwire key."
           echo "This check must pass before the PR will be reviewed."
           exit 1
 
@@ -198,6 +203,9 @@ jobs:
             const hasNotOnchainSigner = lines.some(line =>
               /^NOT_ONCHAIN\s/.test(line)
             );
+            const hasUnreachableVerifier = lines.some(line =>
+              /^UNREACHABLE\s/.test(line)
+            );
 
             let failureMessage = 'This PR may not be reviewed because one or more commits failed [Groundwire](https://groundwire.io/) verification:'
             let why = [
@@ -218,6 +226,17 @@ jobs:
                 '1. **Install Groundwire** at [groundwire.io](https://groundwire.io/)',
                 '2. **Configure Vitriol** at `http://<your groundwire>/vitriol`',
                 '3. **Re-sign your commits** — `git rebase --exec "true" HEAD~N`'
+              ];
+            } else if (hasUnreachableVerifier) {
+              failureMessage = 'This PR may not be reviewed because CI could not reach the repository\'s [Groundwire](https://groundwire.io/) verifier node:';
+              why = [
+                'The commits include Groundwire signatures, but the GitHub Action could not contact the verifier configured in the repository secrets. This is usually a maintainer-side infrastructure or secret configuration issue, not a contributor signing issue.'
+              ];
+              fixSteps = [
+                '1. **Check that the repository verifier node is running** and reachable from GitHub Actions',
+                '2. **Check the `GROUNDWIRE_ENDPOINT` repository secret** and make sure it points at the verifier\'s public HTTP endpoint',
+                '3. **Check `GROUNDWIRE_AUTH`** if the verifier requires an Eyre auth cookie, or enable public verification for the CI endpoints',
+                '4. **Re-run this check** after the verifier is reachable'
               ];
             } else if (hasNotOnchainSigner) {
               failureMessage = 'This PR may not be reviewed because at least one commit was signed by a Groundwire ID that is not onchain:';
