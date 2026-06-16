@@ -153,7 +153,11 @@ jobs:
             if [ "$VALID" != "true" ]; then
               ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error // "unknown"')
               echo "::error::Commit ${SHORT}: ${SIGNER} verification failed (${ERROR_MSG})"
-              RESULTS="${RESULTS}FAILED ${SHORT} ${SIGNER} ${ERROR_MSG}\n"
+              if [ "$ERROR_MSG" = "signer not found in Jael" ] || [ "$ERROR_MSG" = "signer has no keys (life=0)" ]; then
+                RESULTS="${RESULTS}NOT_ONCHAIN ${SHORT} ${SIGNER} ${ERROR_MSG}\n"
+              else
+                RESULTS="${RESULTS}FAILED ${SHORT} ${SIGNER} ${ERROR_MSG}\n"
+              fi
               VERIFIED="false"
             else
               LIFE=$(echo "$RESPONSE" | jq -r '.life // "?"')
@@ -187,23 +191,63 @@ jobs:
               results = fs.readFileSync('/tmp/verification-results.txt', 'utf8').trim();
             } catch (_) {}
 
+            const lines = results.split('\n').filter(Boolean);
+            const hasNoGroundwireSignature = lines.some(line =>
+              /^(UNSIGNED|NOT_GROUNDWIRE)\s/.test(line)
+            );
+            const hasNotOnchainSigner = lines.some(line =>
+              /^NOT_ONCHAIN\s/.test(line)
+            );
+
+            let failureMessage = 'This PR may not be reviewed because one or more commits failed [Groundwire](https://groundwire.io/) verification.'
+            let why = [
+              'This repository requires contributors to prove ownership of an onchain Groundwire ID.',
+              'Commit signatures are cryptographically verified against the signer\'s onchain networking key.'
+            ];
+            let fixSteps = [
+              '1. **Make sure Groundwire is running** at the URL Vitriol expects at `sign-endpoint` in `/<local repo>/.git/config`'
+              '2. **Update the cookie** for `sign-token` in `/<local repo>/.git/config` ([instructions](https://docs.urbit.org/urbit-os/kernel/eyre/external-api-ref#authentication))'
+              '3. **Re-sign your commits** with `git rebase --exec "true" HEAD~N`'
+            ];
+
+            if (hasNoGroundwireSignature) {
+              failureMessage = 'This PR may not be reviewed because at least one commit has no [Groundwire](https://groundwire.io/) signature.';
+              why = [
+                'This repository requires contributors to prove ownership of an onchain Groundwire ID.',
+                'Commit signatures are cryptographically verified against the signer\'s onchain networking key.'
+              ];
+              fixSteps = [
+                '1. **Install Groundwire** at [groundwire.io](https://groundwire.io/)',
+                '2. **Configure Vitriol** at `http://<your groundwire>/vitriol`',
+                '3. **Re-sign your commits** — `git rebase --exec "true" HEAD~N`'
+              ];
+            } else if (hasNotOnchainSigner) {
+              failureMessage = 'This PR may not be reviewed because at least one commit was signed by a Groundwire ID that is not onchain.';
+              why = [
+                'The commit includes a Groundwire signature, but the signer is not present in the verifier\'s state.',
+                'The signer must have an onchain Groundwire identity with a current networking key before CI can verify the commit.'
+              ];
+              fixSteps = [
+                '1. **Put the signing Groundwire ID onchain** — [Groundwire](https://groundwire.io/)',
+                '2. **Wait** for the onchain identity to show up in your %urb-watcher state',
+                '3. **Re-run this check**, or re-sign with an already-onchain Groundwire ID'
+              ];
+            }
+
             const body = [
               '## Groundwire Verification Failed',
               '',
-              'This PR will not be reviewed because commits are not signed by a recognized [Groundwire ID](https://groundwire.network).',
+              failureMessage,
               '',
               '```',
               results,
               '```',
               '',
               '### Why?',
-              'This repository requires contributors to prove ownership of an onchain Groundwire identity.',
-              'Commit signatures are cryptographically verified against the signer\'s on-chain networking key.',
+              ...why,
               '',
               '### How to fix this',
-              '1. **Get a Groundwire ID** — [groundwire.network/get-started](https://groundwire.network/get-started)',
-              '2. **Install commit signing** — `./hooks/install.sh <your-ship-url>`',
-              '3. **Re-sign your commits** — `git rebase --exec "true" HEAD~N` (after configuring signing)',
+              ...fixSteps,
               '',
               '---',
               '*This repository is protected by [Groundwire for GitHub](https://groundwire.network/github).*'
@@ -219,7 +263,14 @@ jobs:
               c.body?.includes('Groundwire Verification Failed')
             );
 
-            if (!existing) {
+            if (existing && existing.body !== body) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else if (!existing) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
