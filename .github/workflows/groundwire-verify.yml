@@ -199,7 +199,7 @@ jobs:
               /^NOT_ONCHAIN\s/.test(line)
             );
 
-            let failureMessage = 'This PR may not be reviewed because one or more commits failed [Groundwire](https://groundwire.io/) verification.'
+            let failureMessage = 'This PR may not be reviewed because one or more commits failed [Groundwire](https://groundwire.io/) verification:'
             let why = [
               'This repository requires contributors to prove ownership of an onchain Groundwire ID.',
               'Commit signatures are cryptographically verified against the signer\'s onchain networking key.'
@@ -211,7 +211,7 @@ jobs:
             ];
 
             if (hasNoGroundwireSignature) {
-              failureMessage = 'This PR may not be reviewed because at least one commit has no [Groundwire](https://groundwire.io/) signature.';
+              failureMessage = 'This PR may not be reviewed because at least one commit has no [Groundwire](https://groundwire.io/) signature:';
               why = [
                 'This repository requires contributors to prove ownership of an onchain Groundwire ID.',
                 'Commit signatures are cryptographically verified against the signer\'s onchain networking key.'
@@ -222,7 +222,7 @@ jobs:
                 '3. **Re-sign your commits** — `git rebase --exec "true" HEAD~N`'
               ];
             } else if (hasNotOnchainSigner) {
-              failureMessage = 'This PR may not be reviewed because at least one commit was signed by a Groundwire ID that is not onchain.';
+              failureMessage = 'This PR may not be reviewed because at least one commit was signed by a Groundwire ID that is not onchain:';
               why = [
                 'The commit includes a Groundwire signature, but the signer is not present in the verifier\'s state.',
                 'The signer must have an onchain Groundwire identity with a current networking key before CI can verify the commit.'
@@ -242,7 +242,6 @@ jobs:
               '```',
               results,
               '```',
-              '### Why?',
               ...why,
               '',
               '### How to fix this',
