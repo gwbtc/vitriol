@@ -200,9 +200,9 @@ jobs:
             );
 
             let failureMessage = 'This PR may not be reviewed because one or more commits failed [Groundwire](https://groundwire.io/) verification:'
-              why = [
-                'The commit includes a Groundwire signature, but the signer is not present in the verifier\'s state The signer must have an onchain Groundwire identity with a current networking key before CI can verify the commit.'
-              ];
+            let why = [
+              'This repository requires contributors to prove ownership of an onchain Groundwire ID. Commit signatures are cryptographically verified against the signer\'s onchain networking key.'
+            ];
             let fixSteps = [
               '1. **Make sure Groundwire is running** at the URL Vitriol expects at `sign-endpoint` in `/<local repo>/.git/config`',
               '2. **Update the cookie** for `sign-token` in `/<local repo>/.git/config` ([instructions](https://docs.urbit.org/urbit-os/kernel/eyre/external-api-ref#authentication))',
@@ -212,7 +212,7 @@ jobs:
             if (hasNoGroundwireSignature) {
               failureMessage = 'This PR may not be reviewed because at least one commit has no [Groundwire](https://groundwire.io/) signature:';
               why = [
-                'The commit includes a Groundwire signature, but the signer is not present in the verifier\'s state The signer must have an onchain Groundwire identity with a current networking key before CI can verify the commit.'
+                'This repository requires contributors to prove ownership of an onchain Groundwire ID. Commit signatures are cryptographically verified against the signer\'s onchain networking key.'
               ];
               fixSteps = [
                 '1. **Install Groundwire** at [groundwire.io](https://groundwire.io/)',
@@ -222,7 +222,7 @@ jobs:
             } else if (hasNotOnchainSigner) {
               failureMessage = 'This PR may not be reviewed because at least one commit was signed by a Groundwire ID that is not onchain:';
               why = [
-                'The commit includes a Groundwire signature, but the signer is not present in the verifier\'s state The signer must have an onchain Groundwire identity with a current networking key before CI can verify the commit.'
+                'The commit includes a Groundwire signature, but the signer is not present in the verifier\'s state. The signer must have an onchain Groundwire identity with a current networking key before CI can verify the commit.'
               ];
               fixSteps = [
                 '1. **Put the signing Groundwire ID onchain** — [Groundwire](https://groundwire.io/)',
