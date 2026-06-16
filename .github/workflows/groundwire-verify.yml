@@ -249,7 +249,7 @@ jobs:
               ...fixSteps,
               '',
               '---',
-              '*This repository is protected by [Groundwire for GitHub](https://groundwire.network/github).*'
+              '*This repository is protected by [Groundwire for GitHub](https://github.com/gwbtc/vitriol).*'
             ].join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({
