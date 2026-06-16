@@ -228,9 +228,9 @@ jobs:
                 '3. **Re-sign your commits** — `git rebase --exec "true" HEAD~N`'
               ];
             } else if (hasUnreachableVerifier) {
-              failureMessage = 'This PR may not be reviewed because CI could not reach the repository\'s [Groundwire](https://groundwire.io/) verifier node:';
+              failureMessage = 'This PR may not be reviewed because CI could not reach the repository\'s [Groundwire](https://groundwire.io/) verifier node to verify the following commits:';
               why = [
-                'The commits include Groundwire signatures, but the GitHub Action could not contact the verifier configured in the repository secrets. This is usually a maintainer-side infrastructure or secret configuration issue, not a contributor signing issue.'
+                'The commits include Groundwire signatures, but the GitHub Action could not contact the verifier. This is a maintainer-side issue, not a contributor signing issue.'
               ];
               fixSteps = [
                 '1. **Check that the repository verifier node is running** and reachable from GitHub Actions',
