@@ -33,8 +33,8 @@ contributor's ship          GitHub Actions          maintainer's ship
 
 Four pieces:
 
-1. **`hooks/groundwire-sign`** — custom `gpg.program` that sends commit content to the contributor's ship for signing, fetches the maintainer's price, and includes ecash tokens if required
-2. **`hooks/install.sh`** — one-line setup for contributors
+1. **`/vitriol/groundwire-sign`** — custom `gpg.program` served by the desk; it sends commit content to the contributor's ship for signing, fetches the maintainer's price, and includes ecash tokens if required
+2. **`/vitriol/install.sh`** — one-line setup for contributors, served by the desk
 3. **`desk/`** — Urbit `%vitriol` Gall agent that handles signing, verification, ecash wallet, and admin UI
 4. **`.github/workflows/groundwire-verify.yml`** — GitHub Action that gates PRs on valid Groundwire signatures
 
@@ -103,6 +103,8 @@ A landing page at `http://<ship-url>/vitriol` describes the app and lists all en
 | GET | `/vitriol/pubkey` | Ship's networking key from Jael |
 | GET | `/vitriol/ecash-pubkey` | Ship's Curve25519 encryption pubkey for receiving ecash |
 | GET | `/vitriol/check-id/~ship` | Check if a ship is attested on-chain |
+| GET | `/vitriol/install.sh` | Contributor installer shell script |
+| GET | `/vitriol/groundwire-sign` | Git `gpg.program` helper downloaded by the installer |
 
 #### Ecash & payment
 
@@ -131,33 +133,45 @@ A landing page at `http://<ship-url>/vitriol` describes the app and lists all en
 
 ### Quick install
 
+From the repo you want to configure:
+
 ```bash
-./hooks/install.sh <your-ship-url>/vitriol "<auth-cookie>"
+curl -fsSL http://<your-ship-url>/vitriol/install.sh | bash -s -- --local --code <web-login-code>
+```
+
+Use `--cookie` if you already have an Eyre auth cookie, or `--global` to configure all repos:
+
+```bash
+curl -fsSL http://<your-ship-url>/vitriol/install.sh | bash -s -- --global --cookie "<auth-cookie>"
 ```
 
 To also configure ecash payment to a maintainer:
 
 ```bash
-./hooks/install.sh <your-ship-url>/vitriol "<auth-cookie>" \
-  --maintainer <maintainer-ship-url>/vitriol "<maintainer-auth-cookie>"
+curl -fsSL http://<your-ship-url>/vitriol/install.sh | bash -s -- --local --code <web-login-code> \
+  --maintainer http://<maintainer-ship-url>/vitriol "<maintainer-auth-cookie>"
 ```
 
-This configures git globally to sign all commits with your Groundwire key. The hook will automatically fetch the maintainer's price and include the right ecash tokens.
+The installer downloads `groundwire-sign` from the same ship to `~/.groundwire/<ship>/vitriol/gpg`, makes it executable, and configures Git to use that stable per-ship path. This enables you to use Vitriol with multiple ships on one machine. The signer will automatically fetch the maintainer's price and include the right ecash tokens.
 
 ### Manual install
 
 ```bash
-git config --global gpg.program /path/to/hooks/groundwire-sign
-git config --global commit.gpgsign true
-git config --global groundwire.sign-endpoint <your-ship-url>/vitriol
-git config --global groundwire.sign-token "<auth-cookie>"
+mkdir -p ~/.groundwire/<ship>/vitriol
+curl -fsSL http://<your-ship-url>/vitriol/groundwire-sign -o ~/.groundwire/<ship>/vitriol/gpg
+chmod +x ~/.groundwire/<ship>/vitriol/gpg
+
+git config --local gpg.program ~/.groundwire/<ship>/vitriol/gpg
+git config --local commit.gpgsign true
+git config --local groundwire.sign-endpoint http://<your-ship-url>/vitriol
+git config --local groundwire.sign-token "<auth-cookie>"
 
 # Optional: maintainer ecash
-git config --global groundwire.maintainer-endpoint <maintainer-url>/vitriol
-git config --global groundwire.maintainer-token "<maintainer-auth-cookie>"
+git config --local groundwire.maintainer-endpoint http://<maintainer-url>/vitriol
+git config --local groundwire.maintainer-token "<maintainer-auth-cookie>"
 ```
 
-To configure per-repo instead of globally, drop the `--global` flag.
+Use `--global` instead of `--local` if you want one ship to sign all repos on your machine by default.
 
 ### Loading your wallet
 

@@ -84,6 +84,20 @@
   .divider { border: 0; border-top: 1px solid #333; margin: 24px 0 16px; }
   '''
 ::
+++  script
+  ^-  tape
+  %-  trip
+  '''
+  document.addEventListener('DOMContentLoaded', () => {
+    const isLocalhost = window.location.hostname === 'localhost';
+    const port = isLocalhost && window.location.port ? `:${window.location.port}` : '';
+    const base = `${window.location.protocol}//${window.location.hostname}${port}`;
+    const command = `curl -fsSL ${base}/vitriol/install.sh | bash -s -- --local --code your-code`;
+    const installCommand = document.getElementById('vitriol-install-command');
+    if (installCommand) installCommand.textContent = command;
+  });
+  '''
+::
 ::  -- Landing page --
 ::
 ++  render-home
@@ -94,6 +108,9 @@
       ;title: vitriol
       ;style
         ;+  ;/  css
+      ==
+      ;script
+        ;+  ;/  script
       ==
     ==
     ;body
@@ -110,9 +127,9 @@
       ;section
         ;h2: how it works
         ;h3: for committers (signers)
-        ;p: install the pre-commit hook in your repo. when you commit, the hook calls your ship's vitriol agent to sign the commit content with your networking key. the signature and your @p are embedded in the commit message.
-        ;pre: ./hooks/install.sh
-        ;p: if the maintainer requires ecash payment, configure your ship's mint and load sats in the admin panel. the hook will select tokens from your wallet and include them in the signature block.
+        ;p: run the installer from your ship inside the repo you want to configure. it downloads the signer to a stable per-ship path under ~/.groundwire and points git's gpg.program at it. when you commit, the signer calls your ship's vitriol agent to sign the commit content with your networking key.
+        ;pre(id "vitriol-install-command"): curl -fsSL /vitriol/install.sh | bash -s -- --local --code your-code
+        ;p: if the maintainer requires ecash payment, configure your ship's mint and load sats in the admin panel. the signer will select tokens from your wallet and include them in the signature block.
         ;h3: for maintainers (verifiers)
         ;p: add vitriol's verify-commit endpoint to your CI pipeline. it checks the commit signature against the signer's on-chain Groundwire key via Jael.
         ;pre: POST /vitriol/verify-commit
@@ -121,6 +138,14 @@
       ;section
         ;h2: endpoints
         ;h3: signing
+        ;p
+          ;code: GET /vitriol/install.sh
+          ;span:  — contributor installer
+        ==
+        ;p
+          ;code: GET /vitriol/groundwire-sign
+          ;span:  — git gpg.program helper downloaded by the installer
+        ==
         ;p
           ;code: POST /vitriol/sign
           ;span:  — sign commit content with your networking key
