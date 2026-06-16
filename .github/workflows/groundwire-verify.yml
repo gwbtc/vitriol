@@ -205,8 +205,8 @@ jobs:
               'Commit signatures are cryptographically verified against the signer\'s onchain networking key.'
             ];
             let fixSteps = [
-              '1. **Make sure Groundwire is running** at the URL Vitriol expects at `sign-endpoint` in `/<local repo>/.git/config`'
-              '2. **Update the cookie** for `sign-token` in `/<local repo>/.git/config` ([instructions](https://docs.urbit.org/urbit-os/kernel/eyre/external-api-ref#authentication))'
+              '1. **Make sure Groundwire is running** at the URL Vitriol expects at `sign-endpoint` in `/<local repo>/.git/config`',
+              '2. **Update the cookie** for `sign-token` in `/<local repo>/.git/config` ([instructions](https://docs.urbit.org/urbit-os/kernel/eyre/external-api-ref#authentication))',
               '3. **Re-sign your commits** with `git rebase --exec "true" HEAD~N`'
             ];
 
