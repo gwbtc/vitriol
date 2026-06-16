@@ -273,6 +273,22 @@
   ?~  body.request.req  ~
   (de:json:html q.u.body.request.req)
 ::
+++  script-response
+  |=  [eyre-id=@ta content-type=@t body=@t]
+  ^-  (list card)
+  =/  bod=octs  [(met 3 body) body]
+  %+  give-simple-payload:app:server  eyre-id
+  :-  :-  200
+      :~  ['content-type' content-type]
+          ['cache-control' 'no-store']
+      ==
+  [~ bod]
+::
+++  desk-script
+  |=  [ship=@p wen=@da name=@tas]
+  ^-  @t
+  .^(@t %cx /(scot %p ship)/vitriol/(scot %da wen)/fil/vitriol/[name]/sh)
+::
 ++  parse-ud
   |=  txt=@t
   ^-  (unit @ud)
@@ -582,13 +598,21 @@
       !<([@ta inbound-request:eyre] vase)
     =/  rl  (parse-request-line:server url.request.req)
     =/  meth  method.request.req
+    =/  host=@t
+      =/  h=(unit @t)
+        (get-header:http 'host' header-list.request.req)
+      ?~(h 'localhost' u.h)
+    =/  base-url=@t  (cat 3 'http://' host)
     ::  allow public access to verify endpoints when public-verify is on
     =/  is-public-endpoint=?
-      ?&  public-verify
-          ?|  =([%vitriol %verify-commit ~] site.rl)
-              ?=([%vitriol %verify-status *] site.rl)
-              =([%vitriol %sats-per-pr ~] site.rl)
-              =([%vitriol %ecash-pubkey ~] site.rl)
+      ?|  =([%vitriol %install ~] site.rl)
+          =([%vitriol %groundwire-sign ~] site.rl)
+          ?&  public-verify
+              ?|  =([%vitriol %verify-commit ~] site.rl)
+                  ?=([%vitriol %verify-status *] site.rl)
+                  =([%vitriol %sats-per-pr ~] site.rl)
+                  =([%vitriol %ecash-pubkey ~] site.rl)
+              ==
           ==
       ==
     ?.  |(authenticated.req is-public-endpoint)
@@ -603,6 +627,31 @@
         [%vitriol ~]
       :_  this
       (html-response:vitriol-ui eyre-id (render-home:vitriol-ui our.bowl))
+      ::
+      ::  GET /vitriol/install.sh — one-line contributor installer
+      ::
+        [%vitriol %install ~]
+      :_  this
+      %:  script-response
+        eyre-id
+        'text/x-shellscript; charset=utf-8'
+        %:  cat  3
+          (crip "DEFAULT_ENDPOINT='")
+          %:  cat  3
+            (cat 3 base-url '/vitriol')
+            (cat 3 (crip "'\0a") (desk-script our.bowl now.bowl %install))
+          ==
+        ==
+      ==
+      ::  GET /vitriol/groundwire-sign — git gpg.program helper
+      ::
+        [%vitriol %groundwire-sign ~]
+      :_  this
+      %:  script-response
+        eyre-id
+        'text/x-shellscript; charset=utf-8'
+        (desk-script our.bowl now.bowl %groundwire-sign)
+      ==
       ::
       ::  GET /vitriol/admin — admin UI
       ::

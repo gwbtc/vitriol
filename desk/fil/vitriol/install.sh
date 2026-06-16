@@ -3,7 +3,8 @@
 # Install Groundwire commit signing from a ship running %vitriol.
 #
 # Usage:
-#   curl -fsSL http://<your-ship>/vitriol/install.sh | bash -s -- <options>
+#   curl -fsSL http://<your-ship>/vitriol/install.sh | bash -s -- --local --code <code>
+#   curl -fsSL http://<your-ship>/vitriol/install.sh | bash -s -- --global --cookie <cookie>
 #
 # Options:
 #   --local                  Configure only the current git repo.
