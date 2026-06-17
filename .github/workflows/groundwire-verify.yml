@@ -267,7 +267,6 @@ jobs:
               '### How to fix this',
               ...fixSteps,
               '',
-              '---',
               '*This repository is protected by [Groundwire for GitHub](https://github.com/gwbtc/vitriol).*'
             ].join('\n');
 
@@ -312,7 +311,6 @@ jobs:
               '',
               'All commits in this PR passed [Groundwire](https://groundwire.io/) verification. This PR is ready for review.',
               '',
-              '---',
               '*This repository is protected by [Groundwire for GitHub](https://github.com/gwbtc/vitriol).*'
             ].join('\n');
 
