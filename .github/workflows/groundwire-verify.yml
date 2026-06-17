@@ -310,8 +310,7 @@ jobs:
               commentMarker,
               '## Groundwire Verification Passed',
               '',
-              'All commits in this PR passed [Groundwire](https://groundwire.io/) verification.',
-              'This PR is ready for review.',
+              'All commits in this PR passed [Groundwire](https://groundwire.io/) verification. This PR is ready for review.',
               '',
               '---',
               '*This repository is protected by [Groundwire for GitHub](https://github.com/gwbtc/vitriol).*'
