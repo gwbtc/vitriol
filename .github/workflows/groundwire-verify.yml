@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
   statuses: write
 
@@ -207,6 +208,8 @@ jobs:
               /^UNREACHABLE\s/.test(line)
             );
 
+            const commentMarker = '<!-- groundwire-verification-comment -->';
+
             let failureMessage = 'This PR may not be reviewed because one or more commits failed [Groundwire](https://groundwire.io/) verification:'
             let why = [
               'This repository requires contributors to prove ownership of an onchain Groundwire ID. Commit signatures are cryptographically verified against the signer\'s onchain networking key.'
@@ -214,7 +217,7 @@ jobs:
             let fixSteps = [
               '1. **Make sure Groundwire is running** at the URL Vitriol expects at `sign-endpoint` in `/<local repo>/.git/config`',
               '2. **Update the cookie** for `sign-token` in `/<local repo>/.git/config` ([instructions](https://docs.urbit.org/urbit-os/kernel/eyre/external-api-ref#authentication))',
-              '3. **Re-sign your commits** with `git rebase --exec "true" HEAD~N`'
+              '3. **Re-sign your commits** — `git rebase --force-rebase --exec \'git commit --amend --no-edit -S\' HEAD~N`'
             ];
 
             if (hasNoGroundwireSignature) {
@@ -225,7 +228,7 @@ jobs:
               fixSteps = [
                 '1. **Install Groundwire** at [groundwire.io](https://groundwire.io/)',
                 '2. **Configure Vitriol** at `http://<your groundwire>/vitriol`',
-                '3. **Re-sign your commits** — `git rebase --exec "true" HEAD~N`'
+                '3. **Re-sign your commits** — `git rebase --force-rebase --exec \'git commit --amend --no-edit -S\' HEAD~N`',
               ];
             } else if (hasUnreachableVerifier) {
               failureMessage = 'This PR may not be reviewed because CI could not reach the repository\'s [Groundwire](https://groundwire.io/) verifier node to verify the following commits:';
@@ -246,11 +249,12 @@ jobs:
               fixSteps = [
                 '1. **Put the signing Groundwire ID onchain** — [Groundwire](https://groundwire.io/)',
                 '2. **Wait** for the onchain identity to show up in your %urb-watcher state',
-                '3. **Re-run this check**, or re-sign with an already-onchain Groundwire ID'
+                '3. **Re-run this check**, or re-sign with an already-onchain Groundwire ID — `git rebase --force-rebase --exec \'git commit --amend --no-edit -S\' HEAD~N`'
               ];
             }
 
             const body = [
+              commentMarker,
               '## Groundwire Verification Failed',
               '',
               failureMessage,
@@ -274,7 +278,65 @@ jobs:
             });
 
             const existing = comments.find(c =>
-              c.body?.includes('Groundwire Verification Failed')
+              c.body?.includes(commentMarker) ||
+              c.body?.includes('Groundwire Verification Failed') ||
+              c.body?.includes('Groundwire Verification Passed')
+            );
+
+            if (existing && existing.body !== body) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else if (!existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Comment on verified PR
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const commentMarker = '<!-- groundwire-verification-comment -->';
+
+            let results = '';
+            try {
+              results = fs.readFileSync('/tmp/verification-results.txt', 'utf8').trim();
+            } catch (_) {}
+
+            const body = [
+              commentMarker,
+              '## Groundwire Verification Passed',
+              '',
+              'All commits in this PR passed [Groundwire](https://groundwire.io/) verification.',
+              '',
+              '```',
+              results || 'No verification results were recorded.',
+              '```',
+              'This PR is ready for review.',
+              '',
+              '---',
+              '*This repository is protected by [Groundwire for GitHub](https://github.com/gwbtc/vitriol).*'
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c =>
+              c.body?.includes(commentMarker) ||
+              c.body?.includes('Groundwire Verification Failed') ||
+              c.body?.includes('Groundwire Verification Passed')
             );
 
             if (existing && existing.body !== body) {
